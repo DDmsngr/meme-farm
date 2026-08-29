@@ -60,8 +60,14 @@ const USER_AGENT = 'meme-farm/1.0';
 const TRANSLATE_EMAIL = 'mastershtormtrooper@gmail.com';
 const MEME_API = 'https://meme-api.com/gimme';
 
+const VK_DOMAINS = ['mudakoff', 'bugurt_thread', 'mrakobesie', 'webmshki', 'borsch'];
+const VK_MIN_LIKES = 1000;
+const VK_PER_DOMAIN = 20;
+const VK_API_VERSION = '5.199';
+
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
+const VK_TOKEN = process.env.VK_TOKEN;
 
 if (!BOT_TOKEN || !CHAT_ID) {
   console.error('BOT_TOKEN and CHAT_ID env vars are required');
@@ -113,26 +119,93 @@ function isGoodPost(p) {
   return true;
 }
 
-async function fetchAllCandidates() {
+async function fetchAllRedditCandidates() {
   const buckets = await Promise.all(
     SUBREDDITS.map(async (sub) => {
       try {
         const memes = await fetchSubreddit(sub);
         return memes.filter(isGoodPost).map((p) => ({
-          id: postIdFromLink(p.postLink),
-          sub: p.subreddit,
+          source: 'reddit',
+          id: 'id:' + postIdFromLink(p.postLink),
+          origin: p.subreddit,
           title: p.title || '',
           url: p.url,
           ups: p.ups || 0,
-          permalink: p.postLink,
         }));
       } catch (e) {
-        console.warn(`[${sub}] fetch failed:`, e.message);
+        console.warn(`[r/${sub}] fetch failed:`, e.message);
         return [];
       }
     })
   );
-  return buckets.flat().sort((a, b) => b.ups - a.ups);
+  return buckets.flat();
+}
+
+async function fetchVkWall(domain) {
+  const q = new URLSearchParams({
+    domain,
+    count: String(VK_PER_DOMAIN),
+    access_token: VK_TOKEN,
+    v: VK_API_VERSION,
+  });
+  const res = await fetch(`https://api.vk.com/method/wall.get?${q}`, {
+    headers: { 'User-Agent': USER_AGENT },
+  });
+  const j = await res.json();
+  if (j.error) {
+    console.warn(`[vk/${domain}] error ${j.error.error_code}: ${j.error.error_msg}`);
+    return [];
+  }
+  return j.response?.items || [];
+}
+
+function pickVkPhoto(item) {
+  const photoAtt = (item.attachments || []).find((a) => a.type === 'photo');
+  if (!photoAtt) return null;
+  const sizes = photoAtt.photo?.sizes || [];
+  if (!sizes.length) return null;
+  return sizes.reduce((a, b) => ((a.width || 0) > (b.width || 0) ? a : b));
+}
+
+async function fetchAllVkCandidates() {
+  if (!VK_TOKEN) return [];
+  const buckets = await Promise.all(
+    VK_DOMAINS.map(async (domain) => {
+      try {
+        const items = await fetchVkWall(domain);
+        return items
+          .filter((p) => !p.marked_as_ads && !p.is_pinned)
+          .map((p) => {
+            const photo = pickVkPhoto(p);
+            if (!photo) return null;
+            const likes = p.likes?.count || 0;
+            if (likes < VK_MIN_LIKES) return null;
+            return {
+              source: 'vk',
+              id: `vk:${p.owner_id}_${p.id}`,
+              origin: domain,
+              title: (p.text || '').replace(/\s+/g, ' ').trim(),
+              url: photo.url,
+              ups: likes,
+            };
+          })
+          .filter(Boolean);
+      } catch (e) {
+        console.warn(`[vk/${domain}] fetch failed:`, e.message);
+        return [];
+      }
+    })
+  );
+  return buckets.flat();
+}
+
+async function fetchAllCandidates() {
+  const [reddit, vk] = await Promise.all([
+    fetchAllRedditCandidates(),
+    fetchAllVkCandidates(),
+  ]);
+  console.log(`reddit: ${reddit.length}, vk: ${vk.length}`);
+  return [...reddit, ...vk].sort((a, b) => b.ups - a.ups);
 }
 
 async function downloadImage(url) {
@@ -207,11 +280,13 @@ function truncate(s, n) {
 
 function makeCaption(post, translatedTitle, translatedMemeText) {
   const title = truncate(translatedTitle || '', MAX_TITLE_LEN);
-  const via = `via r/${post.sub}`;
-  let caption = title + '\n\n' + via;
+  const via = post.source === 'vk'
+    ? `via vk.com/${post.origin}`
+    : `via r/${post.origin}`;
+  let caption = title ? title + '\n\n' + via : via;
   if (translatedMemeText) {
     const memePart = '💬 ' + truncate(translatedMemeText, MAX_MEME_TEXT_LEN);
-    caption = title + '\n\n' + memePart + '\n\n' + via;
+    caption = (title ? title + '\n\n' : '') + memePart + '\n\n' + via;
   }
   if (caption.length > CAPTION_HARD_LIMIT) {
     caption = caption.slice(0, CAPTION_HARD_LIMIT - 1) + '…';
@@ -245,7 +320,7 @@ async function main() {
 
   for (const post of candidates) {
     const urlHash = md5(post.url);
-    if (dedup.has(urlHash) || dedup.has(`id:${post.id}`)) continue;
+    if (dedup.has(urlHash) || dedup.has(post.id)) continue;
 
     let img;
     try {
@@ -265,19 +340,24 @@ async function main() {
       continue;
     }
 
-    const rawMemeText = await extractMemeText(img.buf);
-    const [translatedTitle, translatedMemeText] = await Promise.all([
-      translate(post.title),
-      rawMemeText ? translate(rawMemeText) : Promise.resolve(''),
-    ]);
+    let translatedTitle = post.title;
+    let translatedMemeText = '';
+    if (post.source === 'reddit') {
+      const rawMemeText = await extractMemeText(img.buf);
+      [translatedTitle, translatedMemeText] = await Promise.all([
+        translate(post.title),
+        rawMemeText ? translate(rawMemeText) : Promise.resolve(''),
+      ]);
+    }
     const caption = makeCaption(post, translatedTitle, translatedMemeText);
 
-    console.log(`posting r/${post.sub} · ${post.ups} ups · ${post.title.slice(0, 60)}`);
+    const label = post.source === 'vk' ? `vk/${post.origin}` : `r/${post.origin}`;
+    console.log(`posting ${label} · ${post.ups} ups · ${post.title.slice(0, 60)}`);
     await sendPhoto(img.buf, img.ctype, caption);
 
     dedup.add(urlHash);
     dedup.add(imgHash);
-    dedup.add(`id:${post.id}`);
+    dedup.add(post.id);
     await saveDedup(dedup);
     console.log('done');
     return;

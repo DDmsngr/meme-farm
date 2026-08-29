@@ -33,6 +33,7 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          VK_TOKEN: ${{ secrets.VK_TOKEN }}
         run: node src/index.mjs
 
       - name: Commit dedup
