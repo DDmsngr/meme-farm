@@ -1,0 +1,12 @@
+{
+  "name": "meme-farm",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "post": "node src/index.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
