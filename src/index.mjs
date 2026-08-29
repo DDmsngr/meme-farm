@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createWorker } from 'tesseract.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEDUP_PATH = path.resolve(__dirname, '..', 'dedup.json');
@@ -9,7 +10,13 @@ const DEDUP_LIMIT = 5000;
 
 const SUBREDDITS = ['memes', 'dankmemes', 'wholesomememes', 'funny', 'ProgrammerHumor'];
 const MIN_UPS = 500;
-const MAX_TITLE_LEN = 300;
+const MAX_TITLE_LEN = 200;
+const MAX_MEME_TEXT_LEN = 500;
+const CAPTION_HARD_LIMIT = 1000;
+const OCR_MIN_CONFIDENCE = 62;
+const OCR_MIN_LATIN_RATIO = 0.70;
+const OCR_MIN_WORDS = 5;
+const OCR_MIN_LEN = 20;
 const PER_SUB_LIMIT = 25;
 const USER_AGENT = 'meme-farm/1.0';
 const TRANSLATE_EMAIL = 'mastershtormtrooper@gmail.com';
@@ -117,10 +124,47 @@ async function translate(text) {
   }
 }
 
-function makeCaption(post, translatedTitle) {
-  let title = translatedTitle;
-  if (title.length > MAX_TITLE_LEN) title = title.slice(0, MAX_TITLE_LEN - 1) + '…';
-  return `${title}\n\nvia r/${post.sub}`;
+async function extractMemeText(imageBuf) {
+  let worker;
+  try {
+    worker = await createWorker('eng');
+    const { data } = await worker.recognize(imageBuf);
+    const text = data.text.replace(/\s+/g, ' ').trim();
+    const noSpace = text.replace(/\s/g, '');
+    const latin = (text.match(/[a-zA-Z]/g) || []).length;
+    const ratio = noSpace.length ? latin / noSpace.length : 0;
+    const words = text ? text.split(' ').length : 0;
+    const ok =
+      data.confidence >= OCR_MIN_CONFIDENCE &&
+      ratio >= OCR_MIN_LATIN_RATIO &&
+      words >= OCR_MIN_WORDS &&
+      text.length >= OCR_MIN_LEN;
+    console.log(`ocr conf=${data.confidence.toFixed(0)} words=${words} latin%=${(ratio * 100).toFixed(0)} → ${ok ? 'keep' : 'skip'}`);
+    return ok ? text.slice(0, MAX_MEME_TEXT_LEN) : '';
+  } catch (e) {
+    console.warn('ocr failed:', e.message);
+    return '';
+  } finally {
+    if (worker) await worker.terminate();
+  }
+}
+
+function truncate(s, n) {
+  return s.length > n ? s.slice(0, n - 1) + '…' : s;
+}
+
+function makeCaption(post, translatedTitle, translatedMemeText) {
+  const title = truncate(translatedTitle || '', MAX_TITLE_LEN);
+  const via = `via r/${post.sub}`;
+  let caption = title + '\n\n' + via;
+  if (translatedMemeText) {
+    const memePart = '💬 ' + truncate(translatedMemeText, MAX_MEME_TEXT_LEN);
+    caption = title + '\n\n' + memePart + '\n\n' + via;
+  }
+  if (caption.length > CAPTION_HARD_LIMIT) {
+    caption = caption.slice(0, CAPTION_HARD_LIMIT - 1) + '…';
+  }
+  return caption;
 }
 
 async function sendPhoto(imageBuf, ctype, caption) {
@@ -169,8 +213,12 @@ async function main() {
       continue;
     }
 
-    const translated = await translate(post.title);
-    const caption = makeCaption(post, translated);
+    const rawMemeText = await extractMemeText(img.buf);
+    const [translatedTitle, translatedMemeText] = await Promise.all([
+      translate(post.title),
+      rawMemeText ? translate(rawMemeText) : Promise.resolve(''),
+    ]);
+    const caption = makeCaption(post, translatedTitle, translatedMemeText);
 
     console.log(`posting r/${post.sub} · ${post.ups} ups · ${post.title.slice(0, 60)}`);
     await sendPhoto(img.buf, img.ctype, caption);
