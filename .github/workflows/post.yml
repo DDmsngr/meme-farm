@@ -1,9 +1,8 @@
 name: post-meme
 
 on:
-  schedule:
-    # каждые 15 минут с 06:00 до 23:45 МСК (UTC+3 → 03:00–20:45 UTC)
-    - cron: '*/15 3-20 * * *'
+  # расписание пингует cron-job.org (workflow_dispatch), GH cron на 15-мин интервале
+  # ненадёжен на free-раннерах, поэтому убран отсюда
   workflow_dispatch:
 
 concurrency:

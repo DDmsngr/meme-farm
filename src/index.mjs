@@ -60,7 +60,7 @@ const USER_AGENT = 'meme-farm/1.0';
 const TRANSLATE_EMAIL = 'mastershtormtrooper@gmail.com';
 const MEME_API = 'https://meme-api.com/gimme';
 
-const VK_DOMAINS = ['mudakoff', 'bugurt_thread', 'mrakobesie', 'webmshki', 'borsch'];
+const VK_DOMAINS = ['mudakoff', 'bugurt_thread', 'mrakobesie', 'borsch'];
 const VK_MIN_LIKES = 1000;
 const VK_PER_DOMAIN = 20;
 const VK_API_VERSION = '5.199';
@@ -205,7 +205,13 @@ async function fetchAllCandidates() {
     fetchAllVkCandidates(),
   ]);
   console.log(`reddit: ${reddit.length}, vk: ${vk.length}`);
-  return [...reddit, ...vk].sort((a, b) => b.ups - a.ups);
+  reddit.sort((a, b) => b.ups - a.ups);
+  vk.sort((a, b) => b.ups - a.ups);
+  // 15-минутные слоты попеременно: чётный → сначала vk, нечётный → сначала reddit
+  const slot = Math.floor(Date.now() / (15 * 60 * 1000));
+  const preferVk = vk.length > 0 && slot % 2 === 0;
+  console.log(`slot=${slot} prefer=${preferVk ? 'vk' : 'reddit'}`);
+  return preferVk ? [...vk, ...reddit] : [...reddit, ...vk];
 }
 
 async function downloadImage(url) {
