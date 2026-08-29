@@ -8,8 +8,5 @@
   },
   "engines": {
     "node": ">=20"
-  },
-  "dependencies": {
-    "tesseract.js": "^7.0.0"
   }
 }
