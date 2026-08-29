@@ -2,7 +2,8 @@ name: post-meme
 
 on:
   schedule:
-    - cron: '5 * * * *'
+    # каждые 15 минут с 06:00 до 23:45 МСК (UTC+3 → 03:00–20:45 UTC)
+    - cron: '*/15 3-20 * * *'
   workflow_dispatch:
 
 concurrency:
