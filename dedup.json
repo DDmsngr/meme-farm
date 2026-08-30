@@ -21,6 +21,7 @@
     "7dc782e9049685c50490f938ce5a0b9a",
     "938e5f63a2e4a9a4ff80bf650d9e827f",
     "vk:-460389_16422657",
+<<<<<<< HEAD
     "d31ac55e5a83c8f185b2941f3c470517",
     "29c86f91659619dec562f70315c5f4bb",
     "id:1vz53om",
@@ -120,5 +121,10 @@
     "fca9b62cea14afb88c0df4e9791db029",
     "7525b59732d5fb2bddf258878a4c0eb2",
     "id:1w27e4c"
+=======
+    "68ca8faa032aecb534f1575db421d6cd",
+    "eba0ae6a0bee93d66bfb477dea9aa6c0",
+    "id:1w1k739"
+>>>>>>> 3a0bcbf (feat: split long posts into caption + reply message (1024 + 4096 limits))
   ]
 }
