@@ -7,12 +7,20 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEDUP_PATH = path.resolve(__dirname, '..', 'dedup.json');
 const DEDUP_LIMIT = 5000;
 
-const SUBREDDITS = ['Pikabu'];
+const SUBREDDITS = [
+  'Pikabu',
+  'SlavicMemes',
+  'Slavs',
+  'gopniks',
+  'ANormalDayInRussia',
+];
 
 const MIN_UPS = 20;
 const CAPTION_HARD_LIMIT = 1024;
 const PER_SUB_LIMIT = 25;
 const USER_AGENT = 'meme-farm/1.0';
+const BROWSER_UA =
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 const MEME_API = 'https://meme-api.com/gimme';
 
 const VK_DOMAINS = [
@@ -29,6 +37,19 @@ const VK_DOMAINS = [
 const VK_MIN_LIKES = 500;
 const VK_PER_DOMAIN = 20;
 const VK_API_VERSION = '5.199';
+
+const TG_CHANNELS = [
+  'twitt_ota',
+  'sarcasm_orgasm',
+  'meowkyit',
+  'amdevs',
+  'avansanebudet',
+  'ithumor',
+  'internetpasta',
+  'memepedia_Ru',
+  'apatiyaaaa',
+  'yu6_6kan',
+];
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
@@ -164,19 +185,91 @@ async function fetchAllVkCandidates() {
   return buckets.flat();
 }
 
+function decodeHtml(s) {
+  return s
+    .replace(/<br\/?>/g, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function parseViews(s) {
+  const trimmed = s.trim();
+  const num = parseFloat(trimmed);
+  if (Number.isNaN(num)) return 0;
+  if (/K$/i.test(trimmed)) return Math.round(num * 1000);
+  if (/M$/i.test(trimmed)) return Math.round(num * 1_000_000);
+  return Math.round(num);
+}
+
+async function fetchTgChannel(channel) {
+  const r = await fetch(`https://t.me/s/${channel}`, {
+    headers: { 'User-Agent': BROWSER_UA },
+  });
+  if (!r.ok) {
+    console.warn(`[tg/${channel}] HTTP ${r.status}`);
+    return [];
+  }
+  const html = await r.text();
+  const blocks = html.split('tgme_widget_message_wrap').slice(1);
+  const results = [];
+  for (const block of blocks) {
+    const idM = /data-post="([^"]+)"/.exec(block);
+    if (!idM) continue;
+    const photoM = /tgme_widget_message_photo_wrap[\s\S]*?background-image:url\('([^']+)'/.exec(block);
+    if (!photoM) continue;
+    const textM = /<div class="tgme_widget_message_text[^"]*"[^>]*>([\s\S]*?)<\/div>/.exec(block);
+    const viewsM = /tgme_widget_message_views[^>]*>([^<]+)/.exec(block);
+    results.push({
+      source: 'tg',
+      id: `tg:${idM[1]}`,
+      origin: channel,
+      title: textM ? decodeHtml(textM[1]) : '',
+      url: photoM[1],
+      ups: viewsM ? parseViews(viewsM[1]) : 0,
+    });
+  }
+  return results;
+}
+
+async function fetchAllTgCandidates() {
+  const buckets = await Promise.all(
+    TG_CHANNELS.map(async (ch) => {
+      try {
+        return await fetchTgChannel(ch);
+      } catch (e) {
+        console.warn(`[tg/${ch}] fetch failed:`, e.message);
+        return [];
+      }
+    })
+  );
+  return buckets.flat();
+}
+
 async function fetchAllCandidates() {
-  const [reddit, vk] = await Promise.all([
+  const [reddit, vk, tg] = await Promise.all([
     fetchAllRedditCandidates(),
     fetchAllVkCandidates(),
+    fetchAllTgCandidates(),
   ]);
-  console.log(`reddit: ${reddit.length}, vk: ${vk.length}`);
+  console.log(`reddit: ${reddit.length}, vk: ${vk.length}, tg: ${tg.length}`);
   reddit.sort((a, b) => b.ups - a.ups);
   vk.sort((a, b) => b.ups - a.ups);
-  // 15-минутные слоты попеременно: чётный → сначала vk, нечётный → сначала reddit
+  tg.sort((a, b) => b.ups - a.ups);
+  // 3-way ротация по 15-мин слотам: vk → tg → reddit → vk → ...
+  const order = [
+    { name: 'vk', items: vk },
+    { name: 'tg', items: tg },
+    { name: 'reddit', items: reddit },
+  ];
   const slot = Math.floor(Date.now() / (15 * 60 * 1000));
-  const preferVk = vk.length > 0 && slot % 2 === 0;
-  console.log(`slot=${slot} prefer=${preferVk ? 'vk' : 'reddit'}`);
-  return preferVk ? [...vk, ...reddit] : [...reddit, ...vk];
+  const shift = slot % 3;
+  const rotated = [...order.slice(shift), ...order.slice(0, shift)];
+  console.log(`slot=${slot} order=${rotated.map((b) => b.name).join(' → ')}`);
+  return rotated.flatMap((b) => b.items);
 }
 
 async function downloadImage(url) {
@@ -191,10 +284,17 @@ function truncate(s, n) {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
+function attribution(post) {
+  const map = {
+    reddit: `r/${post.origin}`,
+    vk: `vk.com/${post.origin}`,
+    tg: `t.me/${post.origin}`,
+  };
+  return `честно снайдено с ${map[post.source] || post.origin}`;
+}
+
 function makeCaption(post) {
-  const via = post.source === 'vk'
-    ? `via vk.com/${post.origin}`
-    : `via r/${post.origin}`;
+  const via = attribution(post);
   const text = (post.title || '').trim();
   if (!text) return via;
   const maxText = CAPTION_HARD_LIMIT - via.length - 2; // '\n\n'
@@ -249,7 +349,8 @@ async function main() {
 
     const caption = makeCaption(post);
 
-    const label = post.source === 'vk' ? `vk/${post.origin}` : `r/${post.origin}`;
+    const labelMap = { reddit: `r/${post.origin}`, vk: `vk/${post.origin}`, tg: `tg/${post.origin}` };
+    const label = labelMap[post.source] || post.origin;
     console.log(`posting ${label} · ${post.ups} ups · ${post.title.slice(0, 60)}`);
     await sendPhoto(img.buf, img.ctype, caption);
 
