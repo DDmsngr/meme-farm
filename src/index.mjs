@@ -249,6 +249,24 @@ async function fetchAllTgCandidates() {
   return buckets.flat();
 }
 
+function interleaveByOrigin(items) {
+  const groups = new Map();
+  for (const it of items) {
+    if (!groups.has(it.origin)) groups.set(it.origin, []);
+    groups.get(it.origin).push(it);
+  }
+  for (const g of groups.values()) g.sort((a, b) => b.ups - a.ups);
+  const buckets = [...groups.values()].sort(() => Math.random() - 0.5);
+  const result = [];
+  const max = buckets.length ? Math.max(...buckets.map((b) => b.length)) : 0;
+  for (let i = 0; i < max; i++) {
+    for (const bucket of buckets) {
+      if (i < bucket.length) result.push(bucket[i]);
+    }
+  }
+  return result;
+}
+
 async function fetchAllCandidates() {
   const [reddit, vk, tg] = await Promise.all([
     fetchAllRedditCandidates(),
@@ -257,12 +275,12 @@ async function fetchAllCandidates() {
   ]);
   console.log(`reddit: ${reddit.length}, vk: ${vk.length}, tg: ${tg.length}`);
   reddit.sort((a, b) => b.ups - a.ups);
-  vk.sort((a, b) => b.ups - a.ups);
-  tg.sort((a, b) => b.ups - a.ups);
+  const vkOrdered = interleaveByOrigin(vk);
+  const tgOrdered = interleaveByOrigin(tg);
   // 3-way ротация по 15-мин слотам: vk → tg → reddit → vk → ...
   const order = [
-    { name: 'vk', items: vk },
-    { name: 'tg', items: tg },
+    { name: 'vk', items: vkOrdered },
+    { name: 'tg', items: tgOrdered },
     { name: 'reddit', items: reddit },
   ];
   const slot = Math.floor(Date.now() / (15 * 60 * 1000));
