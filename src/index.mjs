@@ -302,27 +302,16 @@ function truncate(s, n) {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
-function attribution(post) {
-  const map = {
-    reddit: `r/${post.origin}`,
-    vk: `vk.com/${post.origin}`,
-    tg: `t.me/${post.origin}`,
-  };
-  return `честно снайдено с ${map[post.source] || post.origin}`;
-}
-
 function makeCaption(post) {
-  const via = attribution(post);
   const text = (post.title || '').trim();
-  if (!text) return via;
-  const maxText = CAPTION_HARD_LIMIT - via.length - 2; // '\n\n'
-  return truncate(text, maxText) + '\n\n' + via;
+  if (!text) return '';
+  return truncate(text, CAPTION_HARD_LIMIT);
 }
 
 async function sendPhoto(imageBuf, ctype, caption) {
   const form = new FormData();
   form.append('chat_id', CHAT_ID);
-  form.append('caption', caption);
+  if (caption) form.append('caption', caption);
   const ext = ctype.includes('png') ? 'png' : 'jpg';
   form.append('photo', new Blob([imageBuf], { type: ctype }), `meme.${ext}`);
   const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`, {
