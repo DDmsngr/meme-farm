@@ -11,7 +11,6 @@ const SUBREDDITS = ['Pikabu'];
 
 const MIN_UPS = 20;
 const CAPTION_HARD_LIMIT = 1024;
-const MESSAGE_HARD_LIMIT = 4096;
 const PER_SUB_LIMIT = 25;
 const USER_AGENT = 'meme-farm/1.0';
 const MEME_API = 'https://meme-api.com/gimme';
@@ -192,57 +191,14 @@ function truncate(s, n) {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
-function findSmartCut(text, maxLen) {
-  if (text.length <= maxLen) return text.length;
-  const slice = text.slice(0, maxLen);
-  const half = Math.floor(maxLen * 0.5);
-  const lastDot = Math.max(slice.lastIndexOf('. '), slice.lastIndexOf('.\n'));
-  if (lastDot > half) return lastDot + 1;
-  const lastNewline = slice.lastIndexOf('\n');
-  if (lastNewline > half) return lastNewline;
-  const lastSpace = slice.lastIndexOf(' ');
-  if (lastSpace > half) return lastSpace;
-  return maxLen;
-}
-
-function makeCaptionAndTail(post) {
+function makeCaption(post) {
   const via = post.source === 'vk'
     ? `via vk.com/${post.origin}`
     : `via r/${post.origin}`;
   const text = (post.title || '').trim();
-
-  if (!text) return { caption: via, tail: '' };
-
-  const captionMax = CAPTION_HARD_LIMIT - via.length - 2; // '\n\n'
-  if (text.length <= captionMax) {
-    return { caption: text + '\n\n' + via, tail: '' };
-  }
-
-  const cutIdx = findSmartCut(text, captionMax);
-  const first = text.slice(0, cutIdx).trim();
-  const rest = text.slice(cutIdx).trim();
-  const tailMax = MESSAGE_HARD_LIMIT - via.length - 2;
-  const tail = truncate(rest, tailMax) + '\n\n' + via;
-  return { caption: first, tail };
-}
-
-async function sendMessage(text, replyToMessageId) {
-  const body = {
-    chat_id: CHAT_ID,
-    text,
-    disable_web_page_preview: true,
-  };
-  if (replyToMessageId) body.reply_to_message_id = replyToMessageId;
-  const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const json = await res.json();
-  if (!res.ok || !json.ok) {
-    throw new Error(`telegram sendMessage: ${res.status} ${JSON.stringify(json)}`);
-  }
-  return json;
+  if (!text) return via;
+  const maxText = CAPTION_HARD_LIMIT - via.length - 2; // '\n\n'
+  return truncate(text, maxText) + '\n\n' + via;
 }
 
 async function sendPhoto(imageBuf, ctype, caption) {
@@ -291,14 +247,11 @@ async function main() {
       continue;
     }
 
-    const { caption, tail } = makeCaptionAndTail(post);
+    const caption = makeCaption(post);
 
     const label = post.source === 'vk' ? `vk/${post.origin}` : `r/${post.origin}`;
-    console.log(`posting ${label} · ${post.ups} ups · ${post.title.slice(0, 60)}${tail ? ' [+tail]' : ''}`);
-    const photoRes = await sendPhoto(img.buf, img.ctype, caption);
-    if (tail) {
-      await sendMessage(tail, photoRes.result?.message_id);
-    }
+    console.log(`posting ${label} · ${post.ups} ups · ${post.title.slice(0, 60)}`);
+    await sendPhoto(img.buf, img.ctype, caption);
 
     dedup.add(urlHash);
     dedup.add(imgHash);
