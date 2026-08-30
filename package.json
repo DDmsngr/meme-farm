@@ -8,5 +8,9 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "sharp": "^0.35.4",
+    "sharp-phash": "^2.2.0"
   }
 }

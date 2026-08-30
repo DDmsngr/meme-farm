@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import phash from 'sharp-phash';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEDUP_PATH = path.resolve(__dirname, '..', 'dedup.json');
@@ -14,6 +15,18 @@ const SUBREDDITS = [
   'gopniks',
   'ANormalDayInRussia',
 ];
+const FOOD_SUBS = ['food', 'FoodPorn', 'tonightsdinner'];
+const FACT_VK = ['interesnie_facty', 'FactRoom'];
+const FACT_TG = ['FactRoom'];
+
+const THEMED_CAPTIONS = {
+  morning: 'Доброе утро! ☀️',
+  lunch: 'Приятного аппетита 🍽️',
+  fact: '🧠 Познавательная минутка',
+  night: 'Спокойной ночи 🌙',
+};
+
+const PHASH_THRESHOLD = 6; // Хэмминг-дистанция, ≤ значит визуальный дубль
 
 const MIN_UPS = 20;
 const CAPTION_HARD_LIMIT = 1024;
@@ -64,6 +77,45 @@ const md5 = (buf) => createHash('md5').update(buf).digest('hex');
 
 const IMG_RE = /\.(jpe?g|png)(\?.*)?$/i;
 
+async function computePhash(buf) {
+  return 'phash:' + (await phash(buf));
+}
+
+function hammingDistance(a, b) {
+  if (a.length !== b.length) return Infinity;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) d++;
+  return d;
+}
+
+function findVisualDuplicate(newPhash, dedupSet) {
+  const bits = newPhash.slice('phash:'.length);
+  for (const entry of dedupSet) {
+    if (!entry.startsWith('phash:')) continue;
+    if (hammingDistance(bits, entry.slice('phash:'.length)) <= PHASH_THRESHOLD) return true;
+  }
+  return false;
+}
+
+function mskNow() {
+  return new Date(Date.now() + 3 * 3600 * 1000);
+}
+
+function currentMode() {
+  const now = mskNow();
+  const h = now.getUTCHours();
+  const m = now.getUTCMinutes();
+  if (h === 7 && m < 15) return 'morning';
+  if (h === 12 && m < 15) return 'lunch';
+  if (h === 15 && m < 15) return 'fact';
+  if (h === 23 && m >= 30) return 'night';
+  return 'meme';
+}
+
+function todayMSK() {
+  return mskNow().toISOString().slice(0, 10);
+}
+
 async function loadDedup() {
   try {
     const raw = await readFile(DEDUP_PATH, 'utf8');
@@ -105,9 +157,9 @@ function isGoodPost(p) {
   return true;
 }
 
-async function fetchAllRedditCandidates() {
+async function fetchRedditCandidates(subs) {
   const buckets = await Promise.all(
-    SUBREDDITS.map(async (sub) => {
+    subs.map(async (sub) => {
       try {
         const memes = await fetchSubreddit(sub);
         return memes.filter(isGoodPost).map((p) => ({
@@ -153,10 +205,10 @@ function pickVkPhoto(item) {
   return sizes.reduce((a, b) => ((a.width || 0) > (b.width || 0) ? a : b));
 }
 
-async function fetchAllVkCandidates() {
+async function fetchVkCandidates(domains, minLikes = VK_MIN_LIKES) {
   if (!VK_TOKEN) return [];
   const buckets = await Promise.all(
-    VK_DOMAINS.map(async (domain) => {
+    domains.map(async (domain) => {
       try {
         const items = await fetchVkWall(domain);
         return items
@@ -165,7 +217,7 @@ async function fetchAllVkCandidates() {
             const photo = pickVkPhoto(p);
             if (!photo) return null;
             const likes = p.likes?.count || 0;
-            if (likes < VK_MIN_LIKES) return null;
+            if (likes < minLikes) return null;
             return {
               source: 'vk',
               id: `vk:${p.owner_id}_${p.id}`,
@@ -235,9 +287,9 @@ async function fetchTgChannel(channel) {
   return results;
 }
 
-async function fetchAllTgCandidates() {
+async function fetchTgCandidates(channels) {
   const buckets = await Promise.all(
-    TG_CHANNELS.map(async (ch) => {
+    channels.map(async (ch) => {
       try {
         return await fetchTgChannel(ch);
       } catch (e) {
@@ -267,17 +319,16 @@ function interleaveByOrigin(items) {
   return result;
 }
 
-async function fetchAllCandidates() {
+async function fetchMemeCandidates() {
   const [reddit, vk, tg] = await Promise.all([
-    fetchAllRedditCandidates(),
-    fetchAllVkCandidates(),
-    fetchAllTgCandidates(),
+    fetchRedditCandidates(SUBREDDITS),
+    fetchVkCandidates(VK_DOMAINS),
+    fetchTgCandidates(TG_CHANNELS),
   ]);
   console.log(`reddit: ${reddit.length}, vk: ${vk.length}, tg: ${tg.length}`);
   reddit.sort((a, b) => b.ups - a.ups);
   const vkOrdered = interleaveByOrigin(vk);
   const tgOrdered = interleaveByOrigin(tg);
-  // 3-way ротация по 15-мин слотам: vk → tg → reddit → vk → ...
   const order = [
     { name: 'vk', items: vkOrdered },
     { name: 'tg', items: tgOrdered },
@@ -288,6 +339,71 @@ async function fetchAllCandidates() {
   const rotated = [...order.slice(shift), ...order.slice(0, shift)];
   console.log(`slot=${slot} order=${rotated.map((b) => b.name).join(' → ')}`);
   return rotated.flatMap((b) => b.items);
+}
+
+async function ddgImageSearch(query) {
+  try {
+    const url1 = `https://duckduckgo.com/?q=${encodeURIComponent(query)}&iax=images&ia=images`;
+    const html = await (await fetch(url1, { headers: { 'User-Agent': BROWSER_UA } })).text();
+    const m = html.match(/vqd=["']?([\w-]+)/);
+    if (!m) return [];
+    const vqd = m[1];
+    const q = new URLSearchParams({ l: 'ru-ru', o: 'json', q: query, vqd, f: ',,,,,', p: '1' });
+    const r2 = await fetch(`https://duckduckgo.com/i.js?${q}`, {
+      headers: { 'User-Agent': BROWSER_UA, Referer: 'https://duckduckgo.com/', Accept: 'application/json' },
+    });
+    if (!r2.ok) return [];
+    const j = await r2.json();
+    return (j.results || [])
+      .filter((r) => (r.width || 0) >= 500 && (r.height || 0) >= 500 && /\.(jpe?g|png)(\?|$)/i.test(r.image));
+  } catch (e) {
+    console.warn('ddg search failed:', e.message);
+    return [];
+  }
+}
+
+async function fetchDdgCandidates(query, tag) {
+  const results = await ddgImageSearch(query);
+  console.log(`ddg[${tag}] "${query}" → ${results.length}`);
+  const shuffled = results.sort(() => Math.random() - 0.5);
+  return shuffled.map((r) => ({
+    source: 'ddg',
+    id: `ddg:${tag}:${md5(Buffer.from(r.image))}`,
+    origin: `DuckDuckGo / ${tag}`,
+    title: '',
+    url: r.image,
+    ups: 0,
+  }));
+}
+
+async function fetchCandidatesForMode(mode) {
+  switch (mode) {
+    case 'morning':
+      return fetchDdgCandidates('доброе утро картинка', 'morning');
+    case 'night':
+      return fetchDdgCandidates('спокойной ночи картинка', 'night');
+    case 'lunch': {
+      const reddit = await fetchRedditCandidates(FOOD_SUBS);
+      reddit.sort((a, b) => b.ups - a.ups);
+      return reddit;
+    }
+    case 'fact': {
+      const [vk, tg] = await Promise.all([
+        fetchVkCandidates(FACT_VK, 0),
+        fetchTgCandidates(FACT_TG),
+      ]);
+      console.log(`fact: vk=${vk.length} tg=${tg.length}`);
+      const vkOrdered = interleaveByOrigin(vk);
+      const tgOrdered = interleaveByOrigin(tg);
+      const order = [
+        { name: 'tg', items: tgOrdered },
+        { name: 'vk', items: vkOrdered },
+      ].sort(() => Math.random() - 0.5);
+      return order.flatMap((b) => b.items);
+    }
+    default:
+      return fetchMemeCandidates();
+  }
 }
 
 async function downloadImage(url) {
@@ -302,10 +418,13 @@ function truncate(s, n) {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
-function makeCaption(post) {
+function makeCaption(post, themedPrefix = '') {
   const text = (post.title || '').trim();
-  if (!text) return '';
-  return truncate(text, CAPTION_HARD_LIMIT);
+  const parts = [];
+  if (themedPrefix) parts.push(themedPrefix);
+  if (text) parts.push(text);
+  const joined = parts.join('\n\n');
+  return joined ? truncate(joined, CAPTION_HARD_LIMIT) : '';
 }
 
 async function sendPhoto(imageBuf, ctype, caption) {
@@ -325,13 +444,7 @@ async function sendPhoto(imageBuf, ctype, caption) {
   return json;
 }
 
-async function main() {
-  const dedup = await loadDedup();
-  console.log(`dedup size: ${dedup.size}`);
-
-  const candidates = await fetchAllCandidates();
-  console.log(`candidates: ${candidates.length}`);
-
+async function tryPost(candidates, dedup, themedPrefix) {
   for (const post of candidates) {
     const urlHash = md5(post.url);
     if (dedup.has(urlHash) || dedup.has(post.id)) continue;
@@ -354,9 +467,21 @@ async function main() {
       continue;
     }
 
-    const caption = makeCaption(post);
+    let phashHash = '';
+    try {
+      phashHash = await computePhash(img.buf);
+      if (findVisualDuplicate(phashHash, dedup)) {
+        console.log(`skip ${post.url}: visual duplicate`);
+        dedup.add(urlHash);
+        dedup.add(imgHash);
+        continue;
+      }
+    } catch (e) {
+      console.warn('phash failed, falling back to md5-only:', e.message);
+    }
 
-    const labelMap = { reddit: `r/${post.origin}`, vk: `vk/${post.origin}`, tg: `tg/${post.origin}` };
+    const caption = makeCaption(post, themedPrefix);
+    const labelMap = { reddit: `r/${post.origin}`, vk: `vk/${post.origin}`, tg: `tg/${post.origin}`, ddg: post.origin };
     const label = labelMap[post.source] || post.origin;
     console.log(`posting ${label} · ${post.ups} ups · ${post.title.slice(0, 60)}`);
     await sendPhoto(img.buf, img.ctype, caption);
@@ -364,12 +489,49 @@ async function main() {
     dedup.add(urlHash);
     dedup.add(imgHash);
     dedup.add(post.id);
-    await saveDedup(dedup);
-    console.log('done');
-    return;
+    if (phashHash) dedup.add(phashHash);
+    return true;
+  }
+  return false;
+}
+
+async function main() {
+  const dedup = await loadDedup();
+  console.log(`dedup size: ${dedup.size}`);
+
+  const rawMode = currentMode();
+  const slotKey = `slot:${rawMode}:${todayMSK()}`;
+  const mode =
+    rawMode !== 'meme' && dedup.has(slotKey) ? 'meme' : rawMode;
+  console.log(`raw mode: ${rawMode} · effective: ${mode}`);
+
+  let posted = false;
+  let usedThemed = false;
+
+  if (mode !== 'meme') {
+    const candidates = await fetchCandidatesForMode(mode);
+    if (candidates.length) {
+      posted = await tryPost(candidates, dedup, THEMED_CAPTIONS[mode]);
+      usedThemed = posted;
+    } else {
+      console.log(`themed mode ${mode}: 0 candidates, falling back to meme`);
+    }
   }
 
-  console.log('no fresh candidates this run');
+  if (!posted) {
+    console.log('meme fallback');
+    const candidates = await fetchMemeCandidates();
+    console.log(`candidates: ${candidates.length}`);
+    posted = await tryPost(candidates, dedup, '');
+  }
+
+  if (posted) {
+    if (usedThemed) dedup.add(slotKey);
+    await saveDedup(dedup);
+    console.log('done');
+  } else {
+    console.log('no fresh candidates this run');
+  }
 }
 
 main().catch((e) => {
