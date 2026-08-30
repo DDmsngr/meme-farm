@@ -195,8 +195,7 @@ function makeCaption(post) {
   const via = post.source === 'vk'
     ? `via vk.com/${post.origin}`
     : `via r/${post.origin}`;
-  // reddit-заголовки на r/Pikabu почти всегда кликбейт — суть в картинке
-  const text = post.source === 'reddit' ? '' : (post.title || '').trim();
+  const text = (post.title || '').trim();
   if (!text) return via;
   const maxText = CAPTION_HARD_LIMIT - via.length - 2; // '\n\n'
   return truncate(text, maxText) + '\n\n' + via;
