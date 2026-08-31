@@ -1,0 +1,39 @@
+name: probe-reddit
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install playwright
+        run: |
+          npm install playwright
+          npx playwright install --with-deps chromium
+      - name: Probe reddit
+        run: |
+          cat > probe.mjs <<'EOF'
+          import { chromium } from 'playwright';
+          const subs = ['interestingasfuck', 'blackmagicfuckery', 'CatastrophicFailure', 'holdmybeer'];
+          const browser = await chromium.launch({ headless: true });
+          const ctx = await browser.newContext({
+            userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+          });
+          const page = await ctx.newPage();
+          for (const sub of subs) {
+            for (const path of [`https://old.reddit.com/r/${sub}/top/?t=day`, `https://www.reddit.com/r/${sub}/top/.json?t=day&limit=5`]) {
+              try {
+                const r = await page.goto(path, { waitUntil: 'domcontentloaded', timeout: 20000 });
+                console.log(`r/${sub} · ${path.slice(0, 50)} → ${r?.status()}`);
+              } catch (e) {
+                console.log(`r/${sub} · ${path.slice(0, 50)} → ERR ${e.message.slice(0, 60)}`);
+              }
+            }
+          }
+          await browser.close();
+          EOF
+          node probe.mjs
