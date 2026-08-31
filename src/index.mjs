@@ -28,6 +28,22 @@ const THEMED_CAPTIONS = {
 
 const PHASH_THRESHOLD = 6; // Хэмминг-дистанция, ≤ значит визуальный дубль
 
+const AD_TRIGGERS = [
+  { name: 'promokod', re: /промокод/i },
+  { name: 'discount', re: /скидк[аиоуеы]/i },
+  { name: 'coupon', re: /купон/i },
+  { name: 'bonus', re: /\bбонус/i },
+  { name: 'subscribe', re: /подпи[шс](ись|итесь|аться|ывай)|подписка на канал/i },
+  { name: 'go-link', re: /переход(и|ите)\s+по\s+ссылке|по\s+ссылке\s+ниже/i },
+  { name: 'ad-tag', re: /#реклама|#ad\b|#промо|#partner/i },
+  { name: 'http', re: /https?:\/\//i },
+  { name: 'tme', re: /t\.me\//i },
+  { name: 'shortener', re: /vk\.cc\/|bit\.ly|clck\.ru|taplink/i },
+  { name: 'all-channels', re: /\|\s*(Все|Все наши)\s+каналы|\|\s*Каналы\s+дня/i },
+  { name: 'our-channel', re: /наш(и)?\s+канал|мой\s+канал|канал\s+друг/i },
+];
+const AD_MIN_TRIGGERS = 2;
+
 const MIN_UPS = 20;
 const CAPTION_HARD_LIMIT = 1024;
 const PER_SUB_LIMIT = 25;
@@ -444,10 +460,23 @@ async function sendPhoto(imageBuf, ctype, caption) {
   return json;
 }
 
+function detectAd(text) {
+  if (!text) return null;
+  const hits = AD_TRIGGERS.filter((t) => t.re.test(text)).map((t) => t.name);
+  return hits.length >= AD_MIN_TRIGGERS ? hits : null;
+}
+
 async function tryPost(candidates, dedup, themedPrefix) {
   for (const post of candidates) {
     const urlHash = md5(post.url);
     if (dedup.has(urlHash) || dedup.has(post.id)) continue;
+
+    const adHits = detectAd(post.title);
+    if (adHits) {
+      console.log(`skip ad [${adHits.join(', ')}]: ${post.title.slice(0, 60)}`);
+      dedup.add(post.id);
+      continue;
+    }
 
     let img;
     try {
