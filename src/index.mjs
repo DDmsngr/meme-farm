@@ -90,6 +90,7 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
 const VK_TOKEN = process.env.VK_TOKEN;
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
+const GEMINI_KEY = process.env.GEMINI;
 
 if (!BOT_TOKEN || !CHAT_ID) {
   console.error('BOT_TOKEN and CHAT_ID env vars are required');
@@ -681,6 +682,52 @@ function detectAd(text) {
   return hits.length >= AD_MIN_TRIGGERS ? hits : null;
 }
 
+async function classifyPost(text) {
+  if (!GEMINI_KEY) return null;
+  const clean = (text || '').trim();
+  if (clean.length < 10) return null;
+  const prompt = `Ты фильтр контента для русскоязычного мем-канала. Проверь текст поста и верни JSON с 4 булевыми ключами:
+- ad: реклама/промо/тизер канала/партнёрская интеграция
+- lowquality: бессмысленный, скучный, без сути
+- foreign: написан не на русском (английский, украинский и т.п.)
+- offtopic: не мем/не юмор (новость, серьёзное объявление, инструкция)
+
+Пост:
+"""
+${clean.slice(0, 1000)}
+"""
+
+Ответ строго в формате JSON без пояснений.`;
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0,
+            maxOutputTokens: 100,
+            responseMimeType: 'application/json',
+          },
+        }),
+      }
+    );
+    if (!res.ok) {
+      console.warn(`gemini HTTP ${res.status}`);
+      return null;
+    }
+    const j = await res.json();
+    const raw = j.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (e) {
+    console.warn('gemini failed:', e.message);
+    return null;
+  }
+}
+
 async function tryPost(candidates, dedup, themedPrefix) {
   for (const post of candidates) {
     const urlHash = md5(post.url);
@@ -691,6 +738,16 @@ async function tryPost(candidates, dedup, themedPrefix) {
       console.log(`skip ad [${adHits.join(', ')}]: ${post.title.slice(0, 60)}`);
       dedup.add(post.id);
       continue;
+    }
+
+    const cls = await classifyPost(post.title);
+    if (cls) {
+      const bad = ['ad', 'lowquality', 'foreign', 'offtopic'].filter((k) => cls[k]);
+      if (bad.length) {
+        console.log(`skip llm [${bad.join(', ')}]: ${post.title.slice(0, 60)}`);
+        dedup.add(post.id);
+        continue;
+      }
     }
 
     const labelMap = { reddit: `r/${post.origin}`, vk: `vk/${post.origin}`, tg: `tg/${post.origin}`, yt: `yt/${post.origin}`, rt: `rt/${post.origin}`, ddg: post.origin };

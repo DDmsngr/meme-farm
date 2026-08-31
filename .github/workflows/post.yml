@@ -41,6 +41,7 @@ jobs:
           CHAT_ID: ${{ secrets.CHAT_ID }}
           VK_TOKEN: ${{ secrets.VK_TOKEN }}
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          GEMINI: ${{ secrets.GEMINI }}
         run: node src/index.mjs
 
       - name: Commit dedup
