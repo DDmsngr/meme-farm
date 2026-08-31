@@ -295,17 +295,24 @@ async function fetchTgChannel(channel) {
   for (const block of blocks) {
     const idM = /data-post="([^"]+)"/.exec(block);
     if (!idM) continue;
+    const videoM = /<video[^>]*\ssrc=["']([^"']+)["']/.exec(block);
     const photoM = /tgme_widget_message_photo_wrap[\s\S]*?background-image:url\('([^']+)'/.exec(block);
-    if (!photoM) continue;
+    let mediaType = null;
+    let url = null;
+    if (videoM) { mediaType = 'video'; url = videoM[1]; }
+    else if (photoM) { mediaType = 'photo'; url = photoM[1]; }
+    else continue;
     const textM = /<div class="tgme_widget_message_text[^"]*"[^>]*>([\s\S]*?)<\/div>/.exec(block);
     const viewsM = /tgme_widget_message_views[^>]*>([^<]+)/.exec(block);
+    const views = viewsM ? parseViews(viewsM[1]) : 0;
     results.push({
       source: 'tg',
+      mediaType,
       id: `tg:${idM[1]}`,
       origin: channel,
       title: textM ? decodeHtml(textM[1]) : '',
-      url: photoM[1],
-      ups: viewsM ? parseViews(viewsM[1]) : 0,
+      url,
+      ups: views,
     });
   }
   return results;
@@ -456,6 +463,13 @@ function makeCaption(post, themedPrefix = '') {
 }
 
 async function downloadVideo(sourceUrl) {
+  // прямая mp4-ссылка (TG telesco.pe и подобные) — обычный fetch, без yt-dlp overhead
+  if (/\.mp4(\?|$)/i.test(sourceUrl)) {
+    const r = await fetch(sourceUrl, { headers: { 'User-Agent': BROWSER_UA } });
+    if (!r.ok) throw new Error(`video HTTP ${r.status}`);
+    const buf = Buffer.from(await r.arrayBuffer());
+    return { buf, ctype: r.headers.get('content-type') || 'video/mp4' };
+  }
   const tmpFile = path.join(os.tmpdir(), `meme-farm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.mp4`);
   try {
     await new Promise((resolve, reject) => {
