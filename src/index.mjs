@@ -82,6 +82,10 @@ const YT_MIN_VIEWS = 50_000;
 const YT_MIN_LIKES = 2_000;
 const YT_MAX_DURATION_SEC = 60;
 
+const RT_KEYWORDS = ['мемы', 'приколы', 'смешное', 'шутки'];
+const RT_MIN_VIEWS = 20_000;
+const RT_MAX_DURATION_SEC = 180;
+
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
 const VK_TOKEN = process.env.VK_TOKEN;
@@ -418,16 +422,57 @@ async function fetchYtCandidates() {
   }
 }
 
+async function fetchRutubeCandidates() {
+  const kw = RT_KEYWORDS[Math.floor(Math.random() * RT_KEYWORDS.length)];
+  try {
+    const q = new URLSearchParams({ query: kw, format: 'json' });
+    const r = await fetch(`https://rutube.ru/api/search/video/?${q}`, {
+      headers: { 'User-Agent': BROWSER_UA },
+    });
+    if (!r.ok) {
+      console.warn(`[rt] search "${kw}" HTTP ${r.status}`);
+      return [];
+    }
+    const j = await r.json();
+    const items = j.results || [];
+    const results = [];
+    for (const it of items) {
+      const views = +it.hits || 0;
+      const duration = +it.duration || 0;
+      if (views < RT_MIN_VIEWS) continue;
+      if (duration > RT_MAX_DURATION_SEC || duration < 3) continue;
+      const url = it.video_url || (it.id ? `https://rutube.ru/video/${it.id}/` : null);
+      if (!url) continue;
+      results.push({
+        source: 'rt',
+        mediaType: 'video',
+        id: `rt:${it.id}`,
+        origin: kw,
+        title: (it.title || '').trim(),
+        url,
+        ups: views,
+      });
+    }
+    console.log(`rt "${kw}": ${items.length} raw → ${results.length} pass`);
+    return results;
+  } catch (e) {
+    console.warn('[rt] fetch failed:', e.message);
+    return [];
+  }
+}
+
 async function fetchMemeCandidates() {
-  const [reddit, vk, tg, yt] = await Promise.all([
+  const [reddit, vk, tg, yt, rt] = await Promise.all([
     fetchRedditCandidates(SUBREDDITS),
     fetchVkCandidates(VK_DOMAINS),
     fetchTgCandidates(TG_CHANNELS),
     fetchYtCandidates(),
+    fetchRutubeCandidates(),
   ]);
-  console.log(`reddit: ${reddit.length}, vk: ${vk.length}, tg: ${tg.length}, yt: ${yt.length}`);
+  console.log(`reddit: ${reddit.length}, vk: ${vk.length}, tg: ${tg.length}, yt: ${yt.length}, rt: ${rt.length}`);
   reddit.sort((a, b) => b.ups - a.ups);
   yt.sort((a, b) => b.ups - a.ups);
+  rt.sort((a, b) => b.ups - a.ups);
   const vkOrdered = interleaveByOrigin(vk);
   const tgOrdered = interleaveByOrigin(tg);
   const order = [
@@ -435,6 +480,7 @@ async function fetchMemeCandidates() {
     { name: 'tg', items: tgOrdered },
     { name: 'reddit', items: reddit },
     { name: 'yt', items: yt },
+    { name: 'rt', items: rt },
   ];
   const slot = Math.floor(Date.now() / (15 * 60 * 1000));
   const shift = slot % order.length;
@@ -647,7 +693,7 @@ async function tryPost(candidates, dedup, themedPrefix) {
       continue;
     }
 
-    const labelMap = { reddit: `r/${post.origin}`, vk: `vk/${post.origin}`, tg: `tg/${post.origin}`, yt: `yt/${post.origin}`, ddg: post.origin };
+    const labelMap = { reddit: `r/${post.origin}`, vk: `vk/${post.origin}`, tg: `tg/${post.origin}`, yt: `yt/${post.origin}`, rt: `rt/${post.origin}`, ddg: post.origin };
     const label = labelMap[post.source] || post.origin;
 
     if (post.mediaType === 'video') {
