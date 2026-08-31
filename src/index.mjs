@@ -402,9 +402,13 @@ async function fetchCandidatesForMode(mode) {
         fetchVkCandidates(FACT_VK, 0),
         fetchTgCandidates(FACT_TG),
       ]);
-      console.log(`fact: vk=${vk.length} tg=${tg.length}`);
-      const vkOrdered = interleaveByOrigin(vk);
-      const tgOrdered = interleaveByOrigin(tg);
+      // требуем осмысленный текст: если факт «зашит» в картинку без описания —
+      // после публикации пользователь увидит только «🧠 Познавательная минутка»
+      const MIN_FACT_TEXT_LEN = 50;
+      const withText = [...vk, ...tg].filter((p) => (p.title || '').length >= MIN_FACT_TEXT_LEN);
+      console.log(`fact: vk=${vk.length} tg=${tg.length} → ${withText.length} with text ≥ ${MIN_FACT_TEXT_LEN}`);
+      const vkOrdered = interleaveByOrigin(withText.filter((p) => p.source === 'vk'));
+      const tgOrdered = interleaveByOrigin(withText.filter((p) => p.source === 'tg'));
       const order = [
         { name: 'tg', items: tgOrdered },
         { name: 'vk', items: vkOrdered },
