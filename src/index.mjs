@@ -26,7 +26,7 @@ const THEMED_CAPTIONS = {
   night: 'Спокойной ночи 🌙',
 };
 
-const PHASH_THRESHOLD = 6; // Хэмминг-дистанция, ≤ значит визуальный дубль
+const PHASH_THRESHOLD = 12; // Хэмминг-дистанция, ≤ значит визуальный дубль
 
 const AD_TRIGGERS = [
   { name: 'promokod', re: /промокод/i },
