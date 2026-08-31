@@ -75,6 +75,12 @@ const TG_CHANNELS = [
   'memepedia_Ru',
   'apatiyaaaa',
   'yu6_6kan',
+  'cbpub',
+  'lentachold',
+  'dvachannel',
+  'mudak',
+  'orl_media',
+  'meowfacts',
 ];
 
 const YT_KEYWORDS = ['мемы shorts', 'приколы shorts', 'смешное shorts', 'шутки shorts'];
