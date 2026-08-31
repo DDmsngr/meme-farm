@@ -77,9 +77,15 @@ const TG_CHANNELS = [
   'yu6_6kan',
 ];
 
+const YT_KEYWORDS = ['мемы shorts', 'приколы shorts', 'смешное shorts', 'шутки shorts'];
+const YT_MIN_VIEWS = 50_000;
+const YT_MIN_LIKES = 2_000;
+const YT_MAX_DURATION_SEC = 60;
+
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
 const VK_TOKEN = process.env.VK_TOKEN;
+const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
 
 if (!BOT_TOKEN || !CHAT_ID) {
   console.error('BOT_TOKEN and CHAT_ID env vars are required');
@@ -350,23 +356,88 @@ function interleaveByOrigin(items) {
   return result;
 }
 
+function parseIsoDuration(iso) {
+  const m = /PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/.exec(iso || '');
+  if (!m) return 0;
+  return (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + (+m[3] || 0);
+}
+
+async function fetchYtCandidates() {
+  if (!YOUTUBE_API_KEY) return [];
+  const kw = YT_KEYWORDS[Math.floor(Math.random() * YT_KEYWORDS.length)];
+  try {
+    const sq = new URLSearchParams({
+      part: 'snippet',
+      q: kw,
+      type: 'video',
+      videoDuration: 'short',
+      order: 'viewCount',
+      maxResults: '25',
+      regionCode: 'RU',
+      relevanceLanguage: 'ru',
+      key: YOUTUBE_API_KEY,
+    });
+    const searchJson = await (await fetch(`https://www.googleapis.com/youtube/v3/search?${sq}`)).json();
+    if (searchJson.error) {
+      console.warn(`[yt] search "${kw}" error: ${searchJson.error.message}`);
+      return [];
+    }
+    const items = (searchJson.items || []).filter((it) => it.id?.videoId);
+    if (!items.length) return [];
+    const ids = items.map((i) => i.id.videoId).join(',');
+    const vq = new URLSearchParams({ part: 'statistics,contentDetails', id: ids, key: YOUTUBE_API_KEY });
+    const statsJson = await (await fetch(`https://www.googleapis.com/youtube/v3/videos?${vq}`)).json();
+    const byId = new Map();
+    for (const s of statsJson.items || []) byId.set(s.id, s);
+
+    const results = [];
+    for (const it of items) {
+      const stats = byId.get(it.id.videoId);
+      if (!stats) continue;
+      const views = +stats.statistics?.viewCount || 0;
+      const likes = +stats.statistics?.likeCount || 0;
+      const dur = parseIsoDuration(stats.contentDetails?.duration);
+      if (views < YT_MIN_VIEWS) continue;
+      if (likes < YT_MIN_LIKES) continue;
+      if (dur > YT_MAX_DURATION_SEC || dur < 3) continue;
+      results.push({
+        source: 'yt',
+        mediaType: 'video',
+        id: `yt:${it.id.videoId}`,
+        origin: kw,
+        title: (it.snippet?.title || '').trim(),
+        url: `https://www.youtube.com/shorts/${it.id.videoId}`,
+        ups: views,
+      });
+    }
+    console.log(`yt "${kw}": ${items.length} raw → ${results.length} pass`);
+    return results;
+  } catch (e) {
+    console.warn('[yt] fetch failed:', e.message);
+    return [];
+  }
+}
+
 async function fetchMemeCandidates() {
-  const [reddit, vk, tg] = await Promise.all([
+  const [reddit, vk, tg, yt] = await Promise.all([
     fetchRedditCandidates(SUBREDDITS),
     fetchVkCandidates(VK_DOMAINS),
     fetchTgCandidates(TG_CHANNELS),
+    fetchYtCandidates(),
   ]);
-  console.log(`reddit: ${reddit.length}, vk: ${vk.length}, tg: ${tg.length}`);
+  console.log(`reddit: ${reddit.length}, vk: ${vk.length}, tg: ${tg.length}, yt: ${yt.length}`);
   reddit.sort((a, b) => b.ups - a.ups);
+  yt.sort((a, b) => b.ups - a.ups);
   const vkOrdered = interleaveByOrigin(vk);
   const tgOrdered = interleaveByOrigin(tg);
   const order = [
     { name: 'vk', items: vkOrdered },
     { name: 'tg', items: tgOrdered },
     { name: 'reddit', items: reddit },
+    { name: 'yt', items: yt },
   ];
   const slot = Math.floor(Date.now() / (15 * 60 * 1000));
-  const shift = slot % 3;
+  const shift = slot % order.length;
   const rotated = [...order.slice(shift), ...order.slice(0, shift)];
   console.log(`slot=${slot} order=${rotated.map((b) => b.name).join(' → ')}`);
   return rotated.flatMap((b) => b.items);
@@ -576,7 +647,7 @@ async function tryPost(candidates, dedup, themedPrefix) {
       continue;
     }
 
-    const labelMap = { reddit: `r/${post.origin}`, vk: `vk/${post.origin}`, tg: `tg/${post.origin}`, ddg: post.origin };
+    const labelMap = { reddit: `r/${post.origin}`, vk: `vk/${post.origin}`, tg: `tg/${post.origin}`, yt: `yt/${post.origin}`, ddg: post.origin };
     const label = labelMap[post.source] || post.origin;
 
     if (post.mediaType === 'video') {
