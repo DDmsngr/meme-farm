@@ -8,13 +8,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEDUP_PATH = path.resolve(__dirname, '..', 'dedup.json');
 const DEDUP_LIMIT = 5000;
 
-const SUBREDDITS = [
-  'Pikabu',
-  'SlavicMemes',
-  'Slavs',
-  'gopniks',
-  'ANormalDayInRussia',
-];
+const SUBREDDITS = ['Pikabu', 'ANormalDayInRussia'];
 const FOOD_SUBS = ['food', 'FoodPorn', 'tonightsdinner'];
 const FACT_VK = ['interesnie_facty', 'FactRoom'];
 const FACT_TG = ['FactRoom'];
