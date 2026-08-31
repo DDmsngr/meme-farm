@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, unlink } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import phash from 'sharp-phash';
 
@@ -41,6 +43,7 @@ const AD_MIN_TRIGGERS = 2;
 const MIN_UPS = 20;
 const CAPTION_HARD_LIMIT = 1024;
 const PER_SUB_LIMIT = 25;
+const VIDEO_MAX_BYTES = 50 * 1024 * 1024; // TG sendVideo hard limit
 const USER_AGENT = 'meme-farm/1.0';
 const BROWSER_UA =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
@@ -215,6 +218,14 @@ function pickVkPhoto(item) {
   return sizes.reduce((a, b) => ((a.width || 0) > (b.width || 0) ? a : b));
 }
 
+function pickVkVideoUrl(item) {
+  const videoAtt = (item.attachments || []).find((a) => a.type === 'video');
+  if (!videoAtt || !videoAtt.video) return null;
+  const v = videoAtt.video;
+  const key = v.access_key ? `?list=${v.access_key}` : '';
+  return `https://vk.com/video${v.owner_id}_${v.id}${key}`;
+}
+
 async function fetchVkCandidates(domains, minLikes = VK_MIN_LIKES) {
   if (!VK_TOKEN) return [];
   const buckets = await Promise.all(
@@ -224,18 +235,21 @@ async function fetchVkCandidates(domains, minLikes = VK_MIN_LIKES) {
         return items
           .filter((p) => !p.marked_as_ads && !p.is_pinned)
           .map((p) => {
-            const photo = pickVkPhoto(p);
-            if (!photo) return null;
             const likes = p.likes?.count || 0;
             if (likes < minLikes) return null;
-            return {
+            const title = (p.text || '').replace(/\s+/g, ' ').trim();
+            const base = {
               source: 'vk',
               id: `vk:${p.owner_id}_${p.id}`,
               origin: domain,
-              title: (p.text || '').replace(/\s+/g, ' ').trim(),
-              url: photo.url,
+              title,
               ups: likes,
             };
+            const video = pickVkVideoUrl(p);
+            if (video) return { ...base, mediaType: 'video', url: video };
+            const photo = pickVkPhoto(p);
+            if (photo) return { ...base, mediaType: 'photo', url: photo.url };
+            return null;
           })
           .filter(Boolean);
       } catch (e) {
@@ -441,6 +455,78 @@ function makeCaption(post, themedPrefix = '') {
   return joined ? truncate(joined, CAPTION_HARD_LIMIT) : '';
 }
 
+async function downloadVideo(sourceUrl) {
+  const tmpFile = path.join(os.tmpdir(), `meme-farm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.mp4`);
+  try {
+    await new Promise((resolve, reject) => {
+      const child = spawn('yt-dlp', [
+        '-f', 'best[filesize<50M][height<=720]/best[height<=720]/best',
+        '--no-warnings',
+        '--no-playlist',
+        '--merge-output-format', 'mp4',
+        '-o', tmpFile,
+        sourceUrl,
+      ]);
+      let stderr = '';
+      child.stderr.on('data', (d) => { stderr += d.toString(); });
+      child.on('error', reject);
+      child.on('close', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`yt-dlp exit ${code}: ${stderr.trim().split('\n').slice(-2).join(' | ').slice(0, 200)}`));
+      });
+    });
+    const buf = await readFile(tmpFile);
+    return { buf, ctype: 'video/mp4' };
+  } finally {
+    await unlink(tmpFile).catch(() => {});
+  }
+}
+
+async function extractFirstFrame(videoBuf) {
+  const tmpVid = path.join(os.tmpdir(), `meme-farm-frame-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.mp4`);
+  await writeFile(tmpVid, videoBuf);
+  try {
+    return await new Promise((resolve, reject) => {
+      const child = spawn('ffmpeg', [
+        '-hide_banner', '-loglevel', 'error',
+        '-i', tmpVid,
+        '-vframes', '1',
+        '-f', 'image2pipe',
+        '-vcodec', 'png',
+        'pipe:1',
+      ]);
+      const chunks = [];
+      let stderr = '';
+      child.stdout.on('data', (d) => chunks.push(d));
+      child.stderr.on('data', (d) => { stderr += d.toString(); });
+      child.on('error', reject);
+      child.on('close', (code) => {
+        if (code === 0 && chunks.length) resolve(Buffer.concat(chunks));
+        else reject(new Error(`ffmpeg exit ${code}: ${stderr.slice(0, 200)}`));
+      });
+    });
+  } finally {
+    await unlink(tmpVid).catch(() => {});
+  }
+}
+
+async function sendVideo(videoBuf, caption) {
+  const form = new FormData();
+  form.append('chat_id', CHAT_ID);
+  form.append('video', new Blob([videoBuf], { type: 'video/mp4' }), 'video.mp4');
+  if (caption) form.append('caption', caption);
+  form.append('supports_streaming', 'true');
+  const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendVideo`, {
+    method: 'POST',
+    body: form,
+  });
+  const json = await res.json();
+  if (!res.ok || !json.ok) {
+    throw new Error(`telegram sendVideo: ${res.status} ${JSON.stringify(json).slice(0, 300)}`);
+  }
+  return json;
+}
+
 async function sendPhoto(imageBuf, ctype, caption) {
   const form = new FormData();
   form.append('chat_id', CHAT_ID);
@@ -476,6 +562,51 @@ async function tryPost(candidates, dedup, themedPrefix) {
       continue;
     }
 
+    const labelMap = { reddit: `r/${post.origin}`, vk: `vk/${post.origin}`, tg: `tg/${post.origin}`, ddg: post.origin };
+    const label = labelMap[post.source] || post.origin;
+
+    if (post.mediaType === 'video') {
+      let vid;
+      try {
+        vid = await downloadVideo(post.url);
+      } catch (e) {
+        console.warn(`skip video ${post.url}: ${e.message}`);
+        dedup.add(post.id);
+        continue;
+      }
+      if (vid.buf.length > VIDEO_MAX_BYTES) {
+        console.warn(`skip video ${post.url}: too big (${(vid.buf.length / 1024 / 1024).toFixed(1)} MB)`);
+        dedup.add(post.id);
+        continue;
+      }
+      const vidHash = md5(vid.buf);
+      if (dedup.has(vidHash)) {
+        dedup.add(urlHash);
+        continue;
+      }
+      let phashHash = '';
+      try {
+        const frame = await extractFirstFrame(vid.buf);
+        phashHash = await computePhash(frame);
+        if (findVisualDuplicate(phashHash, dedup)) {
+          console.log(`skip video ${post.url}: visual duplicate`);
+          dedup.add(urlHash);
+          dedup.add(vidHash);
+          continue;
+        }
+      } catch (e) {
+        console.warn('video phash failed, md5-only:', e.message);
+      }
+      const caption = makeCaption(post, themedPrefix);
+      console.log(`posting ${label} 📹 · ${post.ups} · ${post.title.slice(0, 60)} · ${(vid.buf.length / 1024 / 1024).toFixed(1)}MB`);
+      await sendVideo(vid.buf, caption);
+      dedup.add(urlHash);
+      dedup.add(vidHash);
+      dedup.add(post.id);
+      if (phashHash) dedup.add(phashHash);
+      return true;
+    }
+
     let img;
     try {
       img = await downloadImage(post.url);
@@ -508,8 +639,6 @@ async function tryPost(candidates, dedup, themedPrefix) {
     }
 
     const caption = makeCaption(post, themedPrefix);
-    const labelMap = { reddit: `r/${post.origin}`, vk: `vk/${post.origin}`, tg: `tg/${post.origin}`, ddg: post.origin };
-    const label = labelMap[post.source] || post.origin;
     console.log(`posting ${label} · ${post.ups} ups · ${post.title.slice(0, 60)}`);
     await sendPhoto(img.buf, img.ctype, caption);
 
