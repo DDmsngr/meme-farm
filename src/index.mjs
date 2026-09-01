@@ -40,6 +40,25 @@ const AD_TRIGGERS = [
 ];
 const AD_MIN_TRIGGERS = 2;
 
+// Сильные триггеры: одно упоминание = скип (банки + яндекс)
+// Используем (?<!\p{L}) и (?!\p{L}) для word-boundaries по кириллице
+const AD_HARD_TRIGGERS = [
+  { name: 'bank', re: /(?<!\p{L})банк(?:а|у|е|ом|ов|ами|ах)?(?!\p{L})/iu },
+  { name: 'alpha', re: /(?<!\p{L})альфа(?:[\s-]?банк\p{L}*)?(?!\p{L})/iu },
+  { name: 'sber', re: /(?<!\p{L})сбер(?:банк\p{L}*|карта|пэй)?(?!\p{L})/iu },
+  { name: 'tinkoff', re: /(?<!\p{L})(?:тинькофф\p{L}*|т[\s-]?банк\p{L}*|t[\s-]?банк\p{L}*)(?!\p{L})/iu },
+  { name: 'vtb', re: /(?<!\p{L})втб(?!\p{L})/iu },
+  { name: 'gazprom', re: /(?<!\p{L})газпром(?:банк\p{L}*|-медиа|нефть)?(?!\p{L})/iu },
+  { name: 'raiffeisen', re: /(?<!\p{L})райффайзен\p{L}*(?!\p{L})/iu },
+  { name: 'otkrytie-bank', re: /(?<!\p{L})банк\s+открытие(?!\p{L})/iu },
+  { name: 'sovkom', re: /(?<!\p{L})совкомбанк\p{L}*(?!\p{L})/iu },
+  { name: 'psb', re: /(?<!\p{L})(?:псб|промсвязьбанк\p{L}*)(?!\p{L})/iu },
+  { name: 'ozon-bank', re: /(?<!\p{L})(?:ozon|озон)\s*банк\p{L}*(?!\p{L})/iu },
+  { name: 'mts-bank', re: /(?<!\p{L})мтс\s*банк\p{L}*(?!\p{L})/iu },
+  { name: 'pochta-bank', re: /(?<!\p{L})почта\s*банк\p{L}*(?!\p{L})/iu },
+  { name: 'yandex', re: /(?<!\p{L})яндекс\p{L}*(?!\p{L})/iu },
+];
+
 const MIN_UPS = 20;
 const CAPTION_HARD_LIMIT = 1024;
 const PER_SUB_LIMIT = 25;
@@ -683,8 +702,10 @@ async function sendPhoto(imageBuf, ctype, caption) {
 
 function detectAd(text) {
   if (!text) return null;
-  const hits = AD_TRIGGERS.filter((t) => t.re.test(text)).map((t) => t.name);
-  return hits.length >= AD_MIN_TRIGGERS ? hits : null;
+  const hardHits = AD_HARD_TRIGGERS.filter((t) => t.re.test(text)).map((t) => 'hard:' + t.name);
+  if (hardHits.length) return hardHits;
+  const softHits = AD_TRIGGERS.filter((t) => t.re.test(text)).map((t) => t.name);
+  return softHits.length >= AD_MIN_TRIGGERS ? softHits : null;
 }
 
 async function classifyPost(text) {
