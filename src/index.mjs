@@ -17,10 +17,17 @@ const FACT_TG = ['FactRoom'];
 
 const THEMED_CAPTIONS = {
   morning: 'Доброе утро! ☀️',
+  monday_morning: 'С понедельником, страдальцы 😩',
   lunch: 'Приятного аппетита 🍽️',
   fact: '🧠 Познавательная минутка',
+  friday: 'Работяги, погнали в выходные 🍺',
+  cashback: '🏦 Напоминание: сегодня 1-е число — не забудьте выбрать кешбэки!',
+  cats: 'Котик на ночь',
   night: 'Спокойной ночи 🌙',
 };
+
+const CATS_VK = ['catszavod'];
+const CATS_TG = ['catszavod', 'meowvibe', 'kotoblog'];
 
 const PHASH_THRESHOLD = 12; // Хэмминг-дистанция, ≤ значит визуальный дубль
 
@@ -153,9 +160,14 @@ function currentMode() {
   const now = mskNow();
   const h = now.getUTCHours();
   const m = now.getUTCMinutes();
-  if (h === 7 && m < 15) return 'morning';
+  const dow = now.getUTCDay(); // 0=Sun ... 1=Mon ... 5=Fri
+  const dom = now.getUTCDate(); // 1..31
+  if (h === 7 && m < 15) return dow === 1 ? 'monday_morning' : 'morning';
+  if (h === 10 && m < 15 && dom === 1) return 'cashback';
   if (h === 12 && m < 15) return 'lunch';
   if (h === 15 && m < 15) return 'fact';
+  if (h === 18 && m < 15 && dow === 5) return 'friday';
+  if (h === 21 && m < 15) return 'cats';
   if (h === 23 && m >= 30) return 'night';
   return 'meme';
 }
@@ -560,9 +572,28 @@ async function fetchDdgCandidates(query, tag) {
 async function fetchCandidatesForMode(mode) {
   switch (mode) {
     case 'morning':
+    case 'monday_morning':
       return fetchDdgCandidates('доброе утро картинка', 'morning');
     case 'night':
       return fetchDdgCandidates('спокойной ночи картинка', 'night');
+    case 'friday':
+      return fetchMemeCandidates();
+    case 'cashback':
+      return fetchDdgCandidates('кешбэк карта деньги', 'cashback');
+    case 'cats': {
+      const [vk, tg] = await Promise.all([
+        fetchVkCandidates(CATS_VK, 0),
+        fetchTgCandidates(CATS_TG),
+      ]);
+      console.log(`cats: vk=${vk.length} tg=${tg.length}`);
+      const vkOrdered = interleaveByOrigin(vk);
+      const tgOrdered = interleaveByOrigin(tg);
+      const order = [
+        { name: 'tg', items: tgOrdered },
+        { name: 'vk', items: vkOrdered },
+      ].sort(() => Math.random() - 0.5);
+      return order.flatMap((b) => b.items);
+    }
     case 'lunch': {
       const reddit = await fetchRedditCandidates(FOOD_SUBS);
       reddit.sort((a, b) => b.ups - a.ups);
