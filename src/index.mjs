@@ -39,17 +39,15 @@ const AD_TRIGGERS = [
   { name: 'subscribe', re: /подпи[шс](ись|итесь|аться|ывай)|подписка на канал/i },
   { name: 'go-link', re: /переход(и|ите)\s+по\s+ссылке|по\s+ссылке\s+ниже/i },
   { name: 'ad-tag', re: /#реклама|#ad\b|#промо|#partner/i },
-  { name: 'http', re: /https?:\/\//i },
-  { name: 'tme', re: /t\.me\//i },
-  { name: 'shortener', re: /vk\.cc\/|bit\.ly|clck\.ru|taplink/i },
   { name: 'all-channels', re: /\|\s*(Все|Все наши)\s+каналы|\|\s*Каналы\s+дня/i },
   { name: 'our-channel', re: /наш(и)?\s+канал|мой\s+канал|канал\s+друг/i },
 ];
 const AD_MIN_TRIGGERS = 2;
 
-// Сильные триггеры: одно упоминание = скип (банки + яндекс)
+// Сильные триггеры: одно упоминание = скип (банки + яндекс + любые ссылки)
 // Используем (?<!\p{L}) и (?!\p{L}) для word-boundaries по кириллице
 const AD_HARD_TRIGGERS = [
+  { name: 'any-link', re: /https?:\/\/\S|www\.[a-z0-9-]+\.\S|(?<!\p{L})t\.me\/\S|(?<!\p{L})(?:vk\.cc|bit\.ly|clck\.ru|taplink|goo\.gl|tinyurl|short\.link)\/\S/iu },
   { name: 'bank', re: /(?<!\p{L})банк(?:а|у|е|ом|ов|ами|ах)?(?!\p{L})/iu },
   { name: 'alpha', re: /(?<!\p{L})альфа(?:[\s-]?банк\p{L}*)?(?!\p{L})/iu },
   { name: 'sber', re: /(?<!\p{L})сбер(?:банк\p{L}*|карта|пэй)?(?!\p{L})/iu },
@@ -634,13 +632,31 @@ function truncate(s, n) {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
-function makeCaption(post, themedPrefix = '') {
+const TG_MESSAGE_LIMIT = 4096;
+
+function splitAt(text, limit) {
+  if (text.length <= limit) return { head: text, tail: '' };
+  const search = text.slice(0, limit);
+  for (const sep of ['\n\n', '\n', '. ', '! ', '? ', ' ']) {
+    const idx = search.lastIndexOf(sep);
+    if (idx > limit * 0.6) {
+      return {
+        head: text.slice(0, idx + sep.length).trim(),
+        tail: text.slice(idx + sep.length).trim(),
+      };
+    }
+  }
+  return { head: text.slice(0, limit).trim(), tail: text.slice(limit).trim() };
+}
+
+function makeCaptionParts(post, themedPrefix = '') {
   const text = (post.title || '').trim();
-  const parts = [];
-  if (themedPrefix) parts.push(themedPrefix);
-  if (text) parts.push(text);
-  const joined = parts.join('\n\n');
-  return joined ? truncate(joined, CAPTION_HARD_LIMIT) : '';
+  const prefix = themedPrefix ? themedPrefix + (text ? '\n\n' : '') : '';
+  if (!text) return { head: prefix, tail: '' };
+  const budget = CAPTION_HARD_LIMIT - prefix.length;
+  if (text.length <= budget) return { head: prefix + text, tail: '' };
+  const { head, tail } = splitAt(text, budget);
+  return { head: prefix + head, tail: truncate(tail, TG_MESSAGE_LIMIT) };
 }
 
 async function downloadVideo(sourceUrl) {
@@ -737,6 +753,32 @@ async function sendPhoto(imageBuf, ctype, caption) {
     throw new Error(`telegram: ${res.status} ${JSON.stringify(json)}`);
   }
   return json;
+}
+
+async function sendMessage(text, replyTo) {
+  const form = new FormData();
+  form.append('chat_id', CHAT_ID);
+  form.append('text', text);
+  if (replyTo) form.append('reply_to_message_id', String(replyTo));
+  const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+    method: 'POST',
+    body: form,
+  });
+  const json = await res.json();
+  if (!res.ok || !json.ok) {
+    throw new Error(`telegram sendMessage: ${res.status} ${JSON.stringify(json).slice(0, 300)}`);
+  }
+  return json;
+}
+
+async function postTail(sendResult, tail) {
+  if (!tail) return;
+  const msgId = sendResult?.result?.message_id;
+  try {
+    await sendMessage(tail, msgId);
+  } catch (e) {
+    console.warn(`tail send failed: ${e.message}`);
+  }
 }
 
 function detectAd(text) {
@@ -850,9 +892,10 @@ async function tryPost(candidates, dedup, themedPrefix) {
       } catch (e) {
         console.warn('video phash failed, md5-only:', e.message);
       }
-      const caption = makeCaption(post, themedPrefix);
-      console.log(`posting ${label} 📹 · ${post.ups} · ${post.title.slice(0, 60)} · ${(vid.buf.length / 1024 / 1024).toFixed(1)}MB`);
-      await sendVideo(vid.buf, caption);
+      const { head, tail } = makeCaptionParts(post, themedPrefix);
+      console.log(`posting ${label} 📹 · ${post.ups} · ${post.title.slice(0, 60)} · ${(vid.buf.length / 1024 / 1024).toFixed(1)}MB${tail ? ` · +tail ${tail.length}` : ''}`);
+      const sent = await sendVideo(vid.buf, head);
+      await postTail(sent, tail);
       dedup.add(urlHash);
       dedup.add(vidHash);
       dedup.add(post.id);
@@ -891,9 +934,10 @@ async function tryPost(candidates, dedup, themedPrefix) {
       console.warn('phash failed, falling back to md5-only:', e.message);
     }
 
-    const caption = makeCaption(post, themedPrefix);
-    console.log(`posting ${label} · ${post.ups} ups · ${post.title.slice(0, 60)}`);
-    await sendPhoto(img.buf, img.ctype, caption);
+    const { head, tail } = makeCaptionParts(post, themedPrefix);
+    console.log(`posting ${label} · ${post.ups} ups · ${post.title.slice(0, 60)}${tail ? ` · +tail ${tail.length}` : ''}`);
+    const sent = await sendPhoto(img.buf, img.ctype, head);
+    await postTail(sent, tail);
 
     dedup.add(urlHash);
     dedup.add(imgHash);
