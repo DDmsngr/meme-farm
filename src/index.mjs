@@ -16,15 +16,73 @@ const FACT_VK = ['interesnie_facty', 'FactRoom'];
 const FACT_TG = ['FactRoom'];
 
 const THEMED_CAPTIONS = {
-  morning: 'Доброе утро! ☀️',
-  monday_morning: 'С понедельником, страдальцы 😩',
-  lunch: 'Приятного аппетита 🍽️',
-  fact: '🧠 Познавательная минутка',
-  friday: 'Работяги, погнали в выходные 🍺',
-  cashback: '🏦 Напоминание: сегодня 1-е число — не забудьте выбрать кешбэки!',
-  cats: 'Котик на ночь',
-  night: 'Спокойной ночи 🌙',
+  morning: [
+    'Утро, работяги ☀️ Пора пахать',
+    'Подъём! Кофе в зубы и погнали ☕',
+    'Открывайте глаза, начинается смена 👁️',
+    'Утро, соня. Мир не остановился ☀️',
+  ],
+  monday_morning: [
+    'С понедельником, страдальцы 😩',
+    'Ну что, снова в бой? Понедельник, блин 😤',
+    'Проснулись? Впереди пять дней. Держись 🫡',
+    'Понедельник — это не приговор, это привычка 🥲',
+  ],
+  lunch: [
+    'Кушать подано, садитесь жрать 🍽️',
+    'Обеденный перерыв, работяги 🍔',
+    'Пожуй, пока начальник не видит 🍕',
+    'Мозг требует топлива 🍜',
+  ],
+  fact: [
+    '🧠 Загрузим-ка чутка в череп',
+    '🧠 Полезное на диван к пиву',
+    '🧠 Держи факт, повыпендриваешься перед корешами',
+    '🧠 Факт, которым будешь блистать на свиданке',
+  ],
+  friday: [
+    'Работяги, погнали в выходные 🍺',
+    'Всё, неделя всё. Наливай 🍻',
+    'Пятница вечер — святое дело 🎉',
+    'Бросайте ноутбуки, начинается жизнь 🕺',
+  ],
+  cashback: [
+    '🏦 Не забудь ткнуть кешбэки, а то опять пролетишь на месяц',
+    '🏦 Первое число! Кешбэки сами себя не выберут',
+    '🏦 Пятиминутка жадности: обнови кешбэки во всех банках',
+    '🏦 Кешбэки на новый месяц ждут, шустрее',
+  ],
+  weekend_sat: [
+    'Ну что, отсыпаемся, лентяи? 😎',
+    'Суббота — святой день ничегонеделания ☕',
+    'Просыпаемся, когда сами захотим 🛌',
+    'Выходной, работяги. Заслужили 🍩',
+  ],
+  cats: [
+    'Котик на ночь',
+    'Мурчалка перед сном 🐾',
+    'Обнимите кота и живите дальше 🐈',
+    'Пусть этот котик успокоит вашу душу 🖤',
+  ],
+  weekend_sun: [
+    'Готовимся к понедельнику, страдальцы 😩',
+    'Всё, лавочка закрывается. Завтра пахать 😔',
+    'Последний вечер свободы 🥲',
+    'Работа не волк, но завтра идти 🐺',
+  ],
+  night: [
+    'Отбой, работяги. Завтра снова в бой 🌙',
+    'Тушите свет, спать пора 😴',
+    'Хорош залипать, ложись уже 🌙',
+    'Приятных снов, страдальцы 🌛',
+  ],
 };
+
+function pickCaption(mode) {
+  const pool = THEMED_CAPTIONS[mode];
+  if (!pool || !pool.length) return '';
+  return pool[Math.floor(Math.random() * pool.length)];
+}
 
 const CATS_VK = ['catszavod'];
 const CATS_TG = ['catszavod', 'meowvibe', 'kotoblog'];
@@ -158,13 +216,15 @@ function currentMode() {
   const now = mskNow();
   const h = now.getUTCHours();
   const m = now.getUTCMinutes();
-  const dow = now.getUTCDay(); // 0=Sun ... 1=Mon ... 5=Fri
+  const dow = now.getUTCDay(); // 0=Sun ... 1=Mon ... 5=Fri ... 6=Sat
   const dom = now.getUTCDate(); // 1..31
   if (h === 7 && m < 15) return dow === 1 ? 'monday_morning' : 'morning';
   if (h === 10 && m < 15 && dom === 1) return 'cashback';
+  if (h === 10 && m < 15 && dow === 6) return 'weekend_sat';
   if (h === 12 && m < 15) return 'lunch';
   if (h === 15 && m < 15) return 'fact';
   if (h === 18 && m < 15 && dow === 5) return 'friday';
+  if (h === 20 && m < 15 && dow === 0) return 'weekend_sun';
   if (h === 21 && m < 15) return 'cats';
   if (h === 23 && m >= 30) return 'night';
   return 'meme';
@@ -575,6 +635,8 @@ async function fetchCandidatesForMode(mode) {
     case 'night':
       return fetchDdgCandidates('спокойной ночи картинка', 'night');
     case 'friday':
+    case 'weekend_sat':
+    case 'weekend_sun':
       return fetchMemeCandidates();
     case 'cashback':
       return fetchDdgCandidates('кешбэк карта деньги', 'cashback');
@@ -964,7 +1026,7 @@ async function main() {
   if (mode !== 'meme') {
     const candidates = await fetchCandidatesForMode(mode);
     if (candidates.length) {
-      posted = await tryPost(candidates, dedup, THEMED_CAPTIONS[mode]);
+      posted = await tryPost(candidates, dedup, pickCaption(mode));
       usedThemed = posted;
     } else {
       console.log(`themed mode ${mode}: 0 candidates, falling back to meme`);
