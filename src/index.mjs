@@ -224,6 +224,47 @@ async function fetchHolidayCandidates(holidayName) {
   return fetchDdgCandidates(query, 'holiday');
 }
 
+async function fetchGeminiCaption(imageBuf, mimeType) {
+  if (!GEMINI_KEY) return null;
+  const base64 = imageBuf.toString('base64');
+  const prompt = `Ты видишь мемную картинку из русского телеграм-канала. Придумай к ней подпись на русском: дерзко, иронично, разговорно, как у меметичного паблика. Одна фраза, максимум 15 слов, без хештегов, без ссылок, без вопросов к читателю, без обзывательств. Верни JSON: {"caption": "текст"} или {"caption": null} если картинка непонятная или неудобная.`;
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { text: prompt },
+              { inline_data: { mime_type: mimeType, data: base64 } },
+            ],
+          }],
+          generationConfig: {
+            temperature: 0.9,
+            maxOutputTokens: 100,
+            responseMimeType: 'application/json',
+          },
+        }),
+      }
+    );
+    if (!res.ok) {
+      console.warn(`gemini caption HTTP ${res.status}`);
+      return null;
+    }
+    const j = await res.json();
+    const raw = j.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const cap = (parsed?.caption || '').trim();
+    return cap && cap.length > 2 ? cap : null;
+  } catch (e) {
+    console.warn('gemini caption failed:', e.message);
+    return null;
+  }
+}
+
 const CATS_VK = ['catszavod'];
 const CATS_TG = ['catszavod', 'meowvibe', 'kotoblog'];
 
@@ -1039,7 +1080,7 @@ ${clean.slice(0, 1000)}
 }
 
 async function tryPost(candidates, dedup, themedPrefix) {
-  for (const post of candidates) {
+  for (let post of candidates) {
     const urlHash = md5(post.url);
     if (dedup.has(urlHash) || dedup.has(post.id)) continue;
 
@@ -1083,8 +1124,9 @@ async function tryPost(candidates, dedup, themedPrefix) {
         continue;
       }
       let phashHash = '';
+      let frame = null;
       try {
-        const frame = await extractFirstFrame(vid.buf);
+        frame = await extractFirstFrame(vid.buf);
         phashHash = await computePhash(frame);
         if (findVisualDuplicate(phashHash, dedup)) {
           console.log(`skip video ${post.url}: visual duplicate`);
@@ -1094,6 +1136,13 @@ async function tryPost(candidates, dedup, themedPrefix) {
         }
       } catch (e) {
         console.warn('video phash failed, md5-only:', e.message);
+      }
+      if (!post.title?.trim() && !themedPrefix && frame) {
+        const gen = await fetchGeminiCaption(frame, 'image/png');
+        if (gen) {
+          console.log(`gemini caption 🤖 [video]: ${gen}`);
+          post = { ...post, title: gen };
+        }
       }
       const { head, tail } = makeCaptionParts(post, themedPrefix);
       console.log(`posting ${label} 📹 · ${post.ups} · ${post.title.slice(0, 60)} · ${(vid.buf.length / 1024 / 1024).toFixed(1)}MB${tail ? ` · +tail ${tail.length}` : ''}`);
@@ -1135,6 +1184,14 @@ async function tryPost(candidates, dedup, themedPrefix) {
       }
     } catch (e) {
       console.warn('phash failed, falling back to md5-only:', e.message);
+    }
+
+    if (!post.title?.trim() && !themedPrefix) {
+      const gen = await fetchGeminiCaption(img.buf, img.ctype);
+      if (gen) {
+        console.log(`gemini caption 🤖: ${gen}`);
+        post = { ...post, title: gen };
+      }
     }
 
     const { head, tail } = makeCaptionParts(post, themedPrefix);
