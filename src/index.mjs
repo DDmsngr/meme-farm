@@ -497,12 +497,16 @@ async function fetchVkWall(domain) {
   return j.response?.items || [];
 }
 
-function pickVkPhoto(item) {
-  const photoAtt = (item.attachments || []).find((a) => a.type === 'photo');
-  if (!photoAtt) return null;
-  const sizes = photoAtt.photo?.sizes || [];
-  if (!sizes.length) return null;
-  return sizes.reduce((a, b) => ((a.width || 0) > (b.width || 0) ? a : b));
+function pickVkPhotos(item) {
+  const photos = (item.attachments || []).filter((a) => a.type === 'photo');
+  const urls = [];
+  for (const p of photos) {
+    const sizes = p.photo?.sizes || [];
+    if (!sizes.length) continue;
+    const best = sizes.reduce((a, b) => ((a.width || 0) > (b.width || 0) ? a : b));
+    if (best?.url) urls.push(best.url);
+  }
+  return urls;
 }
 
 function pickVkVideoUrl(item) {
@@ -534,8 +538,8 @@ async function fetchVkCandidates(domains, minLikes = VK_MIN_LIKES) {
             };
             const video = pickVkVideoUrl(p);
             if (video) return { ...base, mediaType: 'video', url: video };
-            const photo = pickVkPhoto(p);
-            if (photo) return { ...base, mediaType: 'photo', url: photo.url };
+            const photos = pickVkPhotos(p);
+            if (photos.length) return { ...base, mediaType: 'photo', url: photos[0], urls: photos };
             return null;
           })
           .filter(Boolean);
@@ -591,11 +595,12 @@ async function fetchTgChannel(channel) {
     const idM = /data-post="([^"]+)"/.exec(block);
     if (!idM) continue;
     const videoM = /<video[^>]*\ssrc=["']([^"']+)["']/.exec(block);
-    const photoM = /tgme_widget_message_photo_wrap[\s\S]*?background-image:url\('([^']+)'/.exec(block);
+    const photoUrls = [...block.matchAll(/tgme_widget_message_photo_wrap[\s\S]*?background-image:url\('([^']+)'/g)].map((m) => m[1]);
     let mediaType = null;
     let url = null;
+    let urls = null;
     if (videoM) { mediaType = 'video'; url = videoM[1]; }
-    else if (photoM) { mediaType = 'photo'; url = photoM[1]; }
+    else if (photoUrls.length) { mediaType = 'photo'; url = photoUrls[0]; urls = photoUrls; }
     else continue;
     const textM = /<div class="tgme_widget_message_text[^"]*"[^>]*>([\s\S]*?)<\/div>/.exec(block);
     const viewsM = /tgme_widget_message_views[^>]*>([^<]+)/.exec(block);
@@ -607,6 +612,7 @@ async function fetchTgChannel(channel) {
       origin: channel,
       title: textM ? decodeHtml(textM[1]) : '',
       url,
+      ...(urls ? { urls } : {}),
       ups: views,
     });
   }
@@ -1015,9 +1021,34 @@ async function sendMessage(text, replyTo) {
   return json;
 }
 
+async function sendMediaGroup(items, caption) {
+  const form = new FormData();
+  form.append('chat_id', CHAT_ID);
+  const media = items.map((it, i) => ({
+    type: 'photo',
+    media: `attach://f${i}`,
+    ...(i === 0 && caption ? { caption } : {}),
+  }));
+  form.append('media', JSON.stringify(media));
+  items.forEach((it, i) => {
+    const ext = it.ctype.includes('png') ? 'png' : 'jpg';
+    form.append(`f${i}`, new Blob([it.buf], { type: it.ctype }), `img${i}.${ext}`);
+  });
+  const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMediaGroup`, {
+    method: 'POST',
+    body: form,
+  });
+  const json = await res.json();
+  if (!res.ok || !json.ok) {
+    throw new Error(`telegram sendMediaGroup: ${res.status} ${JSON.stringify(json).slice(0, 300)}`);
+  }
+  return json;
+}
+
 async function postTail(sendResult, tail) {
   if (!tail) return;
-  const msgId = sendResult?.result?.message_id;
+  const first = Array.isArray(sendResult?.result) ? sendResult.result[0] : sendResult?.result;
+  const msgId = first?.message_id;
   try {
     await sendMessage(tail, msgId);
   } catch (e) {
@@ -1153,6 +1184,61 @@ async function tryPost(candidates, dedup, themedPrefix) {
       dedup.add(post.id);
       if (phashHash) dedup.add(phashHash);
       return true;
+    }
+
+    if (post.mediaType === 'photo' && Array.isArray(post.urls) && post.urls.length > 1) {
+      const buffers = [];
+      for (const u of post.urls.slice(0, 10)) {
+        try {
+          const im = await downloadImage(u);
+          if (im.buf.length > 9 * 1024 * 1024) {
+            console.warn(`album skip too big ${u}`);
+            continue;
+          }
+          buffers.push({ buf: im.buf, ctype: im.ctype, url: u });
+        } catch (e) {
+          console.warn(`album img fail ${u}: ${e.message}`);
+        }
+      }
+      if (buffers.length < 2) {
+        console.log(`album ${post.id}: only ${buffers.length} usable, falling back to single`);
+      } else {
+        const firstHash = md5(buffers[0].buf);
+        if (dedup.has(firstHash)) {
+          dedup.add(urlHash);
+          continue;
+        }
+        let phashHash = '';
+        try {
+          phashHash = await computePhash(buffers[0].buf);
+          if (findVisualDuplicate(phashHash, dedup)) {
+            console.log(`skip album ${post.id}: visual duplicate`);
+            dedup.add(urlHash);
+            dedup.add(firstHash);
+            continue;
+          }
+        } catch (e) {
+          console.warn('album phash failed:', e.message);
+        }
+        if (!post.title?.trim() && !themedPrefix) {
+          const gen = await fetchGeminiCaption(buffers[0].buf, buffers[0].ctype);
+          if (gen) {
+            console.log(`gemini caption 🤖 [album]: ${gen}`);
+            post = { ...post, title: gen };
+          }
+        }
+        const { head, tail } = makeCaptionParts(post, themedPrefix);
+        console.log(`posting ${label} 📸×${buffers.length} · ${post.ups} · ${post.title.slice(0, 60)}${tail ? ` · +tail ${tail.length}` : ''}`);
+        const sent = await sendMediaGroup(buffers, head);
+        await postTail(sent, tail);
+        dedup.add(urlHash);
+        dedup.add(firstHash);
+        for (const b of buffers) dedup.add(md5(b.buf));
+        for (const u of post.urls) dedup.add(md5(u));
+        dedup.add(post.id);
+        if (phashHash) dedup.add(phashHash);
+        return true;
+      }
     }
 
     let img;
