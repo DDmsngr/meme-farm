@@ -1,4 +1,4 @@
-const COOLDOWN_SEC = 300; // 5 минут per user
+const COOLDOWN_SEC = 60; // 1 минута per user
 const MAX_INPUT_LEN = 1000;
 const MAX_REPLY_LEN = 200;
 
