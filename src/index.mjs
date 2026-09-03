@@ -84,6 +84,146 @@ function pickCaption(mode) {
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
+// Захардкоженный топ-50 (официальные РФ + международные известные + узнаваемые шуточные)
+// Ключ — MM-DD (без года)
+const HOLIDAYS = {
+  '01-01': 'Новый год 🎄',
+  '01-03': 'День ленивца 🦥',
+  '01-07': 'Рождество Христово ✨',
+  '01-13': 'Старый Новый год 🎉',
+  '01-25': 'Татьянин день / День студента 🎓',
+  '02-02': 'День сурка 🐿',
+  '02-04': 'День рождения интернета 🌐',
+  '02-14': 'День святого Валентина 💘',
+  '02-23': 'День защитника Отечества 🛡',
+  '03-08': 'Международный женский день 🌷',
+  '03-14': 'День числа Пи π',
+  '03-17': 'День святого Патрика ☘',
+  '03-20': 'Международный день счастья 🥳',
+  '04-01': 'День смеха 🤡',
+  '04-12': 'День космонавтики 🚀',
+  '04-22': 'День Земли 🌍',
+  '04-23': 'Всемирный день книги 📖',
+  '05-01': 'Праздник весны и труда 🌷',
+  '05-04': 'День Звёздных войн — да прибудет с тобой Сила ⚔',
+  '05-09': 'День Победы 🎖',
+  '05-25': 'День полотенца 🧻',
+  '06-01': 'День защиты детей 👶',
+  '06-05': 'Всемирный день окружающей среды 🌳',
+  '06-08': 'Всемирный день океанов 🌊',
+  '06-12': 'День России 🇷🇺',
+  '06-21': 'Международный день йоги 🧘',
+  '07-02': 'Всемирный день НЛО 🛸',
+  '07-08': 'День семьи, любви и верности 💑',
+  '07-11': 'Всемирный день шоколада 🍫',
+  '07-17': 'Всемирный день эмодзи 😀',
+  '07-30': 'Международный день дружбы 🤝',
+  '08-08': 'Всемирный день кошек 🐱',
+  '08-13': 'Всемирный день левшей ✋',
+  '08-22': 'День флага России 🇷🇺',
+  '09-01': 'День знаний 📚',
+  '09-13': 'День программиста 💻',
+  '09-19': 'Международный день пиратов 🏴‍☠',
+  '09-27': 'Всемирный день туризма ✈',
+  '10-01': 'Международный день кофе ☕',
+  '10-04': 'Всемирный день животных 🐕',
+  '10-05': 'День учителя 👩‍🏫',
+  '10-16': 'Всемирный день хлеба 🍞',
+  '10-31': 'Хэллоуин 🎃',
+  '11-01': 'Всемирный день веганов 🥗',
+  '11-04': 'День народного единства 🎖',
+  '11-13': 'Всемирный день доброты 🫂',
+  '11-28': 'Чёрная пятница 🛍',
+  '12-04': 'День мамонта 🐘',
+  '12-25': 'Католическое Рождество ✝',
+  '12-31': 'Канун Нового года 🥂',
+};
+
+const HOLIDAY_TEMPLATES = [
+  '🎉 Сегодня {h}. Ну ты понял.',
+  '🎊 Оказывается, сегодня {h}. Отметим?',
+  '🥳 Внимание: {h}. Повод найден.',
+  '🎈 А сегодня, между прочим, {h}',
+];
+
+const RU_MONTHS = [
+  'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+  'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
+];
+
+function todayMonthDay() {
+  const now = mskNow();
+  const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(now.getUTCDate()).padStart(2, '0');
+  return `${mm}-${dd}`;
+}
+
+function todayHumanDate() {
+  const now = mskNow();
+  return `${now.getUTCDate()} ${RU_MONTHS[now.getUTCMonth()]}`;
+}
+
+async function fetchGeminiHoliday(dateStr) {
+  if (!GEMINI_KEY) return null;
+  const prompt = `Какой интересный, забавный или необычный тематический праздник отмечается ${dateStr}? Это может быть международный, российский, или неформальный "день чего-то" (день кофе, день пиццы, день лени и т.п.). Верни JSON: {"holiday": "название с одним эмодзи в конце"} — короткое название, максимум 5 слов. Если ничего интересного не найдено, верни {"holiday": null}.`;
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.4,
+            maxOutputTokens: 60,
+            responseMimeType: 'application/json',
+          },
+        }),
+      }
+    );
+    if (!res.ok) {
+      console.warn(`gemini holiday HTTP ${res.status}`);
+      return null;
+    }
+    const j = await res.json();
+    const raw = j.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed?.holiday || null;
+  } catch (e) {
+    console.warn('gemini holiday failed:', e.message);
+    return null;
+  }
+}
+
+async function getTodayHoliday() {
+  const key = todayMonthDay();
+  if (HOLIDAYS[key]) {
+    console.log(`holiday hardcoded: ${HOLIDAYS[key]}`);
+    return HOLIDAYS[key];
+  }
+  const gem = await fetchGeminiHoliday(todayHumanDate());
+  if (gem) console.log(`holiday gemini: ${gem}`);
+  else console.log(`holiday: nothing today`);
+  return gem;
+}
+
+function pickHolidayTemplate(name) {
+  const tpl = HOLIDAY_TEMPLATES[Math.floor(Math.random() * HOLIDAY_TEMPLATES.length)];
+  return tpl.replace('{h}', name);
+}
+
+function stripEmoji(s) {
+  return s.replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}‍]/gu, '').replace(/\s+/g, ' ').trim();
+}
+
+async function fetchHolidayCandidates(holidayName) {
+  const clean = stripEmoji(holidayName);
+  const query = `${clean} картинка`;
+  return fetchDdgCandidates(query, 'holiday');
+}
+
 const CATS_VK = ['catszavod'];
 const CATS_TG = ['catszavod', 'meowvibe', 'kotoblog'];
 
@@ -221,6 +361,7 @@ function currentMode() {
   if (h === 7 && m < 15) return dow === 1 ? 'monday_morning' : 'morning';
   if (h === 10 && m < 15 && dom === 1) return 'cashback';
   if (h === 10 && m < 15 && dow === 6) return 'weekend_sat';
+  if (h === 11 && m < 15) return 'holiday';
   if (h === 12 && m < 15) return 'lunch';
   if (h === 15 && m < 15) return 'fact';
   if (h === 18 && m < 15 && dow === 5) return 'friday';
@@ -1024,9 +1165,20 @@ async function main() {
   let usedThemed = false;
 
   if (mode !== 'meme') {
-    const candidates = await fetchCandidatesForMode(mode);
+    let candidates = [];
+    let themedPrefix = '';
+    if (mode === 'holiday') {
+      const holidayName = await getTodayHoliday();
+      if (holidayName) {
+        themedPrefix = pickHolidayTemplate(holidayName);
+        candidates = await fetchHolidayCandidates(holidayName);
+      }
+    } else {
+      themedPrefix = pickCaption(mode);
+      candidates = await fetchCandidatesForMode(mode);
+    }
     if (candidates.length) {
-      posted = await tryPost(candidates, dedup, pickCaption(mode));
+      posted = await tryPost(candidates, dedup, themedPrefix);
       usedThemed = posted;
     } else {
       console.log(`themed mode ${mode}: 0 candidates, falling back to meme`);
