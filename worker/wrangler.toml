@@ -5,7 +5,7 @@ compatibility_date = "2024-11-01"
 # COOLDOWNS namespace id заполнить после `wrangler kv namespace create COOLDOWNS`
 [[kv_namespaces]]
 binding = "COOLDOWNS"
-id = "REPLACE_WITH_KV_ID"
+id = "cbdffe33d8d54b2d8acef510480666da"
 
 # Секреты ставить через `wrangler secret put`:
 # - BOT_TOKEN     — токен @memepul_bot (тот же что в GH Secrets репо)
