@@ -8,7 +8,7 @@ import phash from 'sharp-phash';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEDUP_PATH = path.resolve(__dirname, '..', 'dedup.json');
-const DEDUP_LIMIT = 5000;
+const DEDUP_LIMIT = 20000;
 
 const SUBREDDITS = ['Pikabu', 'ANormalDayInRussia'];
 const FOOD_SUBS = ['food', 'FoodPorn', 'tonightsdinner'];
@@ -268,7 +268,7 @@ async function fetchGeminiCaption(imageBuf, mimeType) {
 const CATS_VK = ['catszavod'];
 const CATS_TG = ['catszavod', 'meowvibe', 'kotoblog'];
 
-const PHASH_THRESHOLD = 16; // Хэмминг-дистанция, ≤ значит визуальный дубль (поднято с 12 после пропуска дублей 2026-09-06)
+const PHASH_THRESHOLD = 20; // Хэмминг-дистанция, ≤ значит визуальный дубль (2026-09-06: 12→16→20)
 
 const AD_TRIGGERS = [
   { name: 'promokod', re: /промокод/i },
@@ -398,6 +398,11 @@ function hammingDistance(a, b) {
   let d = 0;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) d++;
   return d;
+}
+
+function tgCdnFileId(url) {
+  const m = /telesco\.pe\/file\/([A-Za-z0-9_-]+)/.exec(url || '');
+  return m ? `tg-cdn:${m[1]}` : null;
 }
 
 function findVisualDuplicate(newPhash, dedupSet) {
@@ -983,29 +988,58 @@ async function downloadVideo(sourceUrl) {
   }
 }
 
-async function extractFirstFrame(videoBuf) {
+function ffprobeDuration(path) {
+  return new Promise((resolve) => {
+    const child = spawn('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', path]);
+    let out = '';
+    child.stdout.on('data', (d) => { out += d.toString(); });
+    child.on('error', () => resolve(0));
+    child.on('close', () => resolve(parseFloat(out.trim()) || 0));
+  });
+}
+
+function ffmpegFrameAt(inputPath, sec) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('ffmpeg', [
+      '-hide_banner', '-loglevel', 'error',
+      '-ss', String(sec.toFixed(2)),
+      '-i', inputPath,
+      '-vframes', '1',
+      '-f', 'image2pipe',
+      '-vcodec', 'png',
+      'pipe:1',
+    ]);
+    const chunks = [];
+    let stderr = '';
+    child.stdout.on('data', (d) => chunks.push(d));
+    child.stderr.on('data', (d) => { stderr += d.toString(); });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0 && chunks.length) resolve(Buffer.concat(chunks));
+      else reject(new Error(`ffmpeg exit ${code}: ${stderr.slice(0, 200)}`));
+    });
+  });
+}
+
+// Возвращает массив PNG-буферов кадров на 10/30/50/70/90% длительности видео.
+// Если ffprobe не смог определить длительность — фолбэк на один первый кадр.
+async function extractFrames(videoBuf) {
   const tmpVid = path.join(os.tmpdir(), `meme-farm-frame-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.mp4`);
   await writeFile(tmpVid, videoBuf);
   try {
-    return await new Promise((resolve, reject) => {
-      const child = spawn('ffmpeg', [
-        '-hide_banner', '-loglevel', 'error',
-        '-i', tmpVid,
-        '-vframes', '1',
-        '-f', 'image2pipe',
-        '-vcodec', 'png',
-        'pipe:1',
-      ]);
-      const chunks = [];
-      let stderr = '';
-      child.stdout.on('data', (d) => chunks.push(d));
-      child.stderr.on('data', (d) => { stderr += d.toString(); });
-      child.on('error', reject);
-      child.on('close', (code) => {
-        if (code === 0 && chunks.length) resolve(Buffer.concat(chunks));
-        else reject(new Error(`ffmpeg exit ${code}: ${stderr.slice(0, 200)}`));
-      });
-    });
+    const duration = await ffprobeDuration(tmpVid);
+    const points = duration > 1
+      ? [0.1, 0.3, 0.5, 0.7, 0.9].map((p) => duration * p)
+      : [0];
+    const frames = [];
+    for (const t of points) {
+      try {
+        frames.push(await ffmpegFrameAt(tmpVid, t));
+      } catch (e) {
+        console.warn(`frame at ${t.toFixed(1)}s failed: ${e.message}`);
+      }
+    }
+    return frames;
   } finally {
     await unlink(tmpVid).catch(() => {});
   }
@@ -1155,6 +1189,13 @@ async function tryPost(candidates, dedup, themedPrefix) {
     const urlHash = md5(post.url);
     if (dedup.has(urlHash) || dedup.has(post.id)) continue;
 
+    const tgFid = tgCdnFileId(post.url);
+    if (tgFid && dedup.has(tgFid)) {
+      console.log(`skip: tg-cdn duplicate ${tgFid}`);
+      dedup.add(urlHash);
+      continue;
+    }
+
     const cleanTitle = stripChannelSignature(post.title || '');
     if (cleanTitle !== post.title) post = { ...post, title: cleanTitle };
 
@@ -1197,13 +1238,20 @@ async function tryPost(candidates, dedup, themedPrefix) {
         dedup.add(urlHash);
         continue;
       }
-      let phashHash = '';
-      let frame = null;
+      let phashHashes = [];
+      let firstFrame = null;
       try {
-        frame = await extractFirstFrame(vid.buf);
-        phashHash = await computePhash(frame);
-        if (findVisualDuplicate(phashHash, dedup)) {
-          console.log(`skip video ${post.url}: visual duplicate`);
+        const frames = await extractFrames(vid.buf);
+        firstFrame = frames[0] || null;
+        for (const fr of frames) {
+          try { phashHashes.push(await computePhash(fr)); } catch {}
+        }
+        const matches = phashHashes.filter((ph) => findVisualDuplicate(ph, dedup)).length;
+        // ≥2 совпадения из 5 кадров → тот же ролик (случайное совпадение маловероятно).
+        // Для короткого видео с 1 кадром — как раньше, 1 совпадение = дубль.
+        const threshold = phashHashes.length >= 3 ? 2 : 1;
+        if (phashHashes.length && matches >= threshold) {
+          console.log(`skip video ${post.url}: ${matches}/${phashHashes.length} frames matched`);
           dedup.add(urlHash);
           dedup.add(vidHash);
           continue;
@@ -1211,8 +1259,8 @@ async function tryPost(candidates, dedup, themedPrefix) {
       } catch (e) {
         console.warn('video phash failed, md5-only:', e.message);
       }
-      if (!post.title?.trim() && !themedPrefix && frame) {
-        const gen = await fetchGeminiCaption(frame, 'image/png');
+      if (!post.title?.trim() && !themedPrefix && firstFrame) {
+        const gen = await fetchGeminiCaption(firstFrame, 'image/png');
         if (gen) {
           console.log(`gemini caption 🤖 [video]: ${gen}`);
           post = { ...post, title: gen };
@@ -1225,7 +1273,8 @@ async function tryPost(candidates, dedup, themedPrefix) {
       dedup.add(urlHash);
       dedup.add(vidHash);
       dedup.add(post.id);
-      if (phashHash) dedup.add(phashHash);
+      if (tgFid) dedup.add(tgFid);
+      for (const ph of phashHashes) dedup.add(ph);
       return true;
     }
 
@@ -1277,8 +1326,13 @@ async function tryPost(candidates, dedup, themedPrefix) {
         dedup.add(urlHash);
         dedup.add(firstHash);
         for (const b of buffers) dedup.add(md5(b.buf));
-        for (const u of post.urls) dedup.add(md5(u));
+        for (const u of post.urls) {
+          dedup.add(md5(u));
+          const fid = tgCdnFileId(u);
+          if (fid) dedup.add(fid);
+        }
         dedup.add(post.id);
+        if (tgFid) dedup.add(tgFid);
         if (phashHash) dedup.add(phashHash);
         return true;
       }
@@ -1331,6 +1385,7 @@ async function tryPost(candidates, dedup, themedPrefix) {
     dedup.add(urlHash);
     dedup.add(imgHash);
     dedup.add(post.id);
+    if (tgFid) dedup.add(tgFid);
     if (phashHash) dedup.add(phashHash);
     return true;
   }
