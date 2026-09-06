@@ -268,7 +268,7 @@ async function fetchGeminiCaption(imageBuf, mimeType) {
 const CATS_VK = ['catszavod'];
 const CATS_TG = ['catszavod', 'meowvibe', 'kotoblog'];
 
-const PHASH_THRESHOLD = 12; // Хэмминг-дистанция, ≤ значит визуальный дубль
+const PHASH_THRESHOLD = 16; // Хэмминг-дистанция, ≤ значит визуальный дубль (поднято с 12 после пропуска дублей 2026-09-06)
 
 const AD_TRIGGERS = [
   { name: 'promokod', re: /промокод/i },
@@ -318,6 +318,9 @@ const AD_HARD_TRIGGERS = [
   { name: 'missile', re: /(?<!\p{L})(?:ракет|снаряд|бомбёж|взрыв|снайпер)\p{L}*(?!\p{L})/iu },
   { name: 'mobilised', re: /(?<!\p{L})(?:мобилизованн|призывник|срочник|контрактник|дезертир)\p{L}*(?!\p{L})/iu },
   { name: 'nato', re: /(?<!\p{L})(?:нато|байден|трамп|макрон|шольц|шольца|санкц|эмбарго)\p{L}*(?!\p{L})/iu },
+  // партии + думская политика (2026-09-06)
+  { name: 'parties', re: /(?<!\p{L})(?:лдпр|кпрф|срзп|единорос|единая\s+россия|яблоко|коммунист)\p{L}*(?!\p{L})/iu },
+  { name: 'duma', re: /(?<!\p{L})(?:депутат|госдум|дума|думе|думы|минцифры|правительств(?:о|а)\s+рф)\p{L}*(?!\p{L})/iu },
 ];
 
 const MIN_UPS = 20;
@@ -899,6 +902,26 @@ function truncate(s, n) {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
+// Вырезает хвостовые «подписи паблика» типа «| Все каналы», «| Каналы дня» — их лепят в конец мемов
+// многие паблики. Пост сам ок, а хвост читателю не нужен и раньше ошибочно рубил его как рекламу.
+function stripChannelSignature(text) {
+  if (!text) return text;
+  let s = text;
+  // до 3 подписей подряд (иногда «| Каналы дня | Все наши каналы»)
+  for (let i = 0; i < 3; i++) {
+    const before = s;
+    s = s
+      .replace(/\s*\|\s*Все\s+(?:наши\s+)?каналы\s*$/iu, '')
+      .replace(/\s*\|\s*Каналы\s+дня\s*$/iu, '')
+      .replace(/\s*\|\s*Наш(?:и)?\s+каналы?\s*$/iu, '')
+      .replace(/\s*\|\s*Мой\s+канал\s*$/iu, '')
+      .replace(/\s*\|\s*Подпис(?:ать|ыв)ся\s*$/iu, '')
+      .trim();
+    if (s === before) break;
+  }
+  return s;
+}
+
 const TG_MESSAGE_LIMIT = 4096;
 
 function splitAt(text, limit) {
@@ -1131,6 +1154,9 @@ async function tryPost(candidates, dedup, themedPrefix) {
   for (let post of candidates) {
     const urlHash = md5(post.url);
     if (dedup.has(urlHash) || dedup.has(post.id)) continue;
+
+    const cleanTitle = stripChannelSignature(post.title || '');
+    if (cleanTitle !== post.title) post = { ...post, title: cleanTitle };
 
     const adHits = detectAd(post.title);
     if (adHits) {
