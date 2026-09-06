@@ -9,6 +9,9 @@ import phash from 'sharp-phash';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEDUP_PATH = path.resolve(__dirname, '..', 'dedup.json');
 const DEDUP_LIMIT = 20000;
+const EMB_PATH = path.resolve(__dirname, '..', 'embeddings.json');
+const EMB_LIMIT = 3000;
+const CLIP_THRESHOLD = 0.90; // cosine similarity, ≥ значит семантический дубль
 
 const SUBREDDITS = ['Pikabu', 'ANormalDayInRussia'];
 const FOOD_SUBS = ['food', 'FoodPorn', 'tonightsdinner'];
@@ -379,6 +382,8 @@ const CHAT_ID = process.env.CHAT_ID;
 const VK_TOKEN = process.env.VK_TOKEN;
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
 const GEMINI_KEY = process.env.GEMINI;
+const CF_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID;
+const CF_AI_TOKEN = process.env.CLOUDFLARE_AI_TOKEN;
 
 if (!BOT_TOKEN || !CHAT_ID) {
   console.error('BOT_TOKEN and CHAT_ID env vars are required');
@@ -455,6 +460,80 @@ async function saveDedup(set) {
   const arr = [...set];
   const trimmed = arr.slice(-DEDUP_LIMIT);
   await writeFile(DEDUP_PATH, JSON.stringify({ hashes: trimmed }, null, 2) + '\n', 'utf8');
+}
+
+async function loadEmbeddings() {
+  try {
+    const raw = await readFile(EMB_PATH, 'utf8');
+    const d = JSON.parse(raw);
+    return Array.isArray(d.vectors) ? d.vectors : [];
+  } catch { return []; }
+}
+
+async function saveEmbeddings(vectors) {
+  const trimmed = vectors.slice(-EMB_LIMIT);
+  await writeFile(EMB_PATH, JSON.stringify({ vectors: trimmed }) + '\n', 'utf8');
+}
+
+function embToBase64(vec) {
+  const buf = Buffer.alloc(vec.length);
+  for (let i = 0; i < vec.length; i++) {
+    const v = Math.max(-1, Math.min(1, vec[i]));
+    buf[i] = Math.round(v * 127) + 128; // -1..1 → 0..254
+  }
+  return buf.toString('base64');
+}
+
+function base64ToEmb(b64) {
+  const buf = Buffer.from(b64, 'base64');
+  const arr = new Float32Array(buf.length);
+  for (let i = 0; i < buf.length; i++) arr[i] = (buf[i] - 128) / 127;
+  return arr;
+}
+
+function cosineSim(a, b) {
+  const n = Math.min(a.length, b.length);
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < n; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+  const denom = Math.sqrt(na) * Math.sqrt(nb);
+  return denom ? dot / denom : 0;
+}
+
+function findSemanticDuplicate(newEmb, stored) {
+  for (const entry of stored) {
+    const s = base64ToEmb(entry.e);
+    if (cosineSim(newEmb, s) >= CLIP_THRESHOLD) return true;
+  }
+  return false;
+}
+
+async function fetchClipEmbedding(imgBuf) {
+  if (!CF_ACCOUNT_ID || !CF_AI_TOKEN) return null;
+  try {
+    const url = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/run/@cf/openai/clip-vit-base-patch32`;
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${CF_AI_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ image: Array.from(imgBuf) }),
+    });
+    if (!r.ok) {
+      const t = await r.text().catch(() => '');
+      console.warn(`clip HTTP ${r.status}: ${t.slice(0, 200)}`);
+      return null;
+    }
+    const j = await r.json();
+    if (!j.success) {
+      console.warn('clip failed:', JSON.stringify(j.errors || j).slice(0, 200));
+      return null;
+    }
+    return j.result?.data?.[0] || null;
+  } catch (e) {
+    console.warn('clip fetch failed:', e.message);
+    return null;
+  }
 }
 
 async function fetchSubreddit(sub) {
@@ -1184,7 +1263,7 @@ ${clean.slice(0, 1000)}
   }
 }
 
-async function tryPost(candidates, dedup, themedPrefix) {
+async function tryPost(candidates, dedup, themedPrefix, embeddings) {
   for (let post of candidates) {
     const urlHash = md5(post.url);
     if (dedup.has(urlHash) || dedup.has(post.id)) continue;
@@ -1259,6 +1338,16 @@ async function tryPost(candidates, dedup, themedPrefix) {
       } catch (e) {
         console.warn('video phash failed, md5-only:', e.message);
       }
+      let videoClipEmb = null;
+      if (firstFrame && embeddings) {
+        videoClipEmb = await fetchClipEmbedding(firstFrame);
+        if (videoClipEmb && findSemanticDuplicate(videoClipEmb, embeddings)) {
+          console.log(`skip video ${post.url}: CLIP semantic duplicate`);
+          dedup.add(urlHash);
+          dedup.add(vidHash);
+          continue;
+        }
+      }
       if (!post.title?.trim() && !themedPrefix && firstFrame) {
         const gen = await fetchGeminiCaption(firstFrame, 'image/png');
         if (gen) {
@@ -1275,6 +1364,9 @@ async function tryPost(candidates, dedup, themedPrefix) {
       dedup.add(post.id);
       if (tgFid) dedup.add(tgFid);
       for (const ph of phashHashes) dedup.add(ph);
+      if (videoClipEmb && embeddings) {
+        embeddings.push({ e: embToBase64(videoClipEmb), ts: Math.floor(Date.now() / 1000) });
+      }
       return true;
     }
 
@@ -1312,6 +1404,16 @@ async function tryPost(candidates, dedup, themedPrefix) {
         } catch (e) {
           console.warn('album phash failed:', e.message);
         }
+        let albumClipEmb = null;
+        if (embeddings) {
+          albumClipEmb = await fetchClipEmbedding(buffers[0].buf);
+          if (albumClipEmb && findSemanticDuplicate(albumClipEmb, embeddings)) {
+            console.log(`skip album ${post.id}: CLIP semantic duplicate`);
+            dedup.add(urlHash);
+            dedup.add(firstHash);
+            continue;
+          }
+        }
         if (!post.title?.trim() && !themedPrefix) {
           const gen = await fetchGeminiCaption(buffers[0].buf, buffers[0].ctype);
           if (gen) {
@@ -1334,6 +1436,9 @@ async function tryPost(candidates, dedup, themedPrefix) {
         dedup.add(post.id);
         if (tgFid) dedup.add(tgFid);
         if (phashHash) dedup.add(phashHash);
+        if (albumClipEmb && embeddings) {
+          embeddings.push({ e: embToBase64(albumClipEmb), ts: Math.floor(Date.now() / 1000) });
+        }
         return true;
       }
     }
@@ -1369,6 +1474,17 @@ async function tryPost(candidates, dedup, themedPrefix) {
       console.warn('phash failed, falling back to md5-only:', e.message);
     }
 
+    let photoClipEmb = null;
+    if (embeddings) {
+      photoClipEmb = await fetchClipEmbedding(img.buf);
+      if (photoClipEmb && findSemanticDuplicate(photoClipEmb, embeddings)) {
+        console.log(`skip ${post.url}: CLIP semantic duplicate`);
+        dedup.add(urlHash);
+        dedup.add(imgHash);
+        continue;
+      }
+    }
+
     if (!post.title?.trim() && !themedPrefix) {
       const gen = await fetchGeminiCaption(img.buf, img.ctype);
       if (gen) {
@@ -1387,6 +1503,9 @@ async function tryPost(candidates, dedup, themedPrefix) {
     dedup.add(post.id);
     if (tgFid) dedup.add(tgFid);
     if (phashHash) dedup.add(phashHash);
+    if (photoClipEmb && embeddings) {
+      embeddings.push({ e: embToBase64(photoClipEmb), ts: Math.floor(Date.now() / 1000) });
+    }
     return true;
   }
   return false;
@@ -1395,6 +1514,11 @@ async function tryPost(candidates, dedup, themedPrefix) {
 async function main() {
   const dedup = await loadDedup();
   console.log(`dedup size: ${dedup.size}`);
+
+  const clipEnabled = !!(CF_ACCOUNT_ID && CF_AI_TOKEN);
+  const embeddings = clipEnabled ? await loadEmbeddings() : null;
+  if (clipEnabled) console.log(`embeddings size: ${embeddings.length}`);
+  else console.log('CLIP off (CLOUDFLARE_ACCOUNT_ID or CLOUDFLARE_AI_TOKEN not set)');
 
   const rawMode = currentMode();
   const slotKey = `slot:${rawMode}:${todayMSK()}`;
@@ -1419,7 +1543,7 @@ async function main() {
       candidates = await fetchCandidatesForMode(mode);
     }
     if (candidates.length) {
-      posted = await tryPost(candidates, dedup, themedPrefix);
+      posted = await tryPost(candidates, dedup, themedPrefix, embeddings);
       usedThemed = posted;
     } else {
       console.log(`themed mode ${mode}: 0 candidates, falling back to meme`);
@@ -1430,12 +1554,13 @@ async function main() {
     console.log('meme fallback');
     const candidates = await fetchMemeCandidates();
     console.log(`candidates: ${candidates.length}`);
-    posted = await tryPost(candidates, dedup, '');
+    posted = await tryPost(candidates, dedup, '', embeddings);
   }
 
   if (posted) {
     if (usedThemed) dedup.add(slotKey);
     await saveDedup(dedup);
+    if (clipEnabled && embeddings) await saveEmbeddings(embeddings);
     console.log('done');
   } else {
     console.log('no fresh candidates this run');

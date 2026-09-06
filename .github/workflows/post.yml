@@ -42,16 +42,22 @@ jobs:
           VK_TOKEN: ${{ secrets.VK_TOKEN }}
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           GEMINI: ${{ secrets.GEMINI }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_AI_TOKEN: ${{ secrets.CLOUDFLARE_AI_TOKEN }}
         run: node src/index.mjs
 
-      - name: Commit dedup
+      - name: Commit dedup & embeddings
         run: |
-          if git diff --quiet dedup.json; then
-            echo "no dedup changes"
+          changed=0
+          if ! git diff --quiet dedup.json 2>/dev/null; then changed=1; fi
+          if [ -f embeddings.json ] && ! git diff --quiet embeddings.json 2>/dev/null; then changed=1; fi
+          if [ "$changed" = "0" ]; then
+            echo "no changes to commit"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add dedup.json
-          git commit -m "chore: update dedup [skip ci]"
+          [ -f embeddings.json ] && git add embeddings.json
+          git commit -m "chore: update dedup & embeddings [skip ci]"
           git push
