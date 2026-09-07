@@ -45,8 +45,7 @@ jobs:
           VK_TOKEN: ${{ secrets.VK_TOKEN }}
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           GEMINI: ${{ secrets.GEMINI }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_AI_TOKEN: ${{ secrets.CLOUDFLARE_AI_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: node src/index.mjs
 
       - name: Commit dedup & embeddings

@@ -378,8 +378,7 @@ const CHAT_ID = process.env.CHAT_ID;
 const VK_TOKEN = process.env.VK_TOKEN;
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
 const GEMINI_KEY = process.env.GEMINI;
-const CF_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID;
-const CF_AI_TOKEN = process.env.CLOUDFLARE_AI_TOKEN;
+const HF_TOKEN = process.env.HF_TOKEN;
 
 if (!BOT_TOKEN || !CHAT_ID) {
   console.error('BOT_TOKEN and CHAT_ID env vars are required');
@@ -514,24 +513,25 @@ function parseJsonFromText(raw) {
 
 let clipDisabledThisRun = false;
 
+// Hugging Face Inference API — openai/clip-vit-base-patch32, feature-extraction pipeline
+// возвращает 512-мерный вектор для картинки. Free tier: ~1000 req/day (нам с запасом хватает).
 async function fetchClipEmbedding(imgBuf) {
-  if (!CF_ACCOUNT_ID || !CF_AI_TOKEN) return null;
+  if (!HF_TOKEN) return null;
   if (clipDisabledThisRun) return null;
   try {
-    const url = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/run/@cf/openai/clip-vit-base-patch32`;
+    const url = 'https://api-inference.huggingface.co/pipeline/feature-extraction/openai/clip-vit-base-patch32';
     const r = await fetch(url, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${CF_AI_TOKEN}`,
-        'Content-Type': 'application/json',
+        Authorization: `Bearer ${HF_TOKEN}`,
+        'Content-Type': 'application/octet-stream',
       },
-      body: JSON.stringify({ image: Array.from(imgBuf) }),
+      body: imgBuf,
     });
     if (!r.ok) {
       const t = await r.text().catch(() => '');
       console.warn(`clip HTTP ${r.status}: ${t.slice(0, 200)}`);
-      // 401/402/403 = auth/billing/access — модель недоступна на этом аккаунте,
-      // не палим API до конца run'а
+      // 401/402/403 = auth/billing/access — модель недоступна, не палим API до конца run'а
       if (r.status === 401 || r.status === 402 || r.status === 403) {
         clipDisabledThisRun = true;
         console.warn('clip disabled for the rest of this run');
@@ -539,11 +539,13 @@ async function fetchClipEmbedding(imgBuf) {
       return null;
     }
     const j = await r.json();
-    if (!j.success) {
-      console.warn('clip failed:', JSON.stringify(j.errors || j).slice(0, 200));
+    // HF возвращает либо [512 floats], либо [[512 floats]]. Развернём.
+    const vec = Array.isArray(j) && Array.isArray(j[0]) ? j[0] : j;
+    if (!Array.isArray(vec) || vec.length < 128) {
+      console.warn('clip unexpected shape:', JSON.stringify(j).slice(0, 200));
       return null;
     }
-    return j.result?.data?.[0] || null;
+    return vec;
   } catch (e) {
     console.warn('clip fetch failed:', e.message);
     return null;
@@ -1527,10 +1529,10 @@ async function main() {
   const dedup = await loadDedup();
   console.log(`dedup size: ${dedup.size}`);
 
-  const clipEnabled = !!(CF_ACCOUNT_ID && CF_AI_TOKEN);
+  const clipEnabled = !!HF_TOKEN;
   const embeddings = clipEnabled ? await loadEmbeddings() : null;
   if (clipEnabled) console.log(`embeddings size: ${embeddings.length}`);
-  else console.log('CLIP off (CLOUDFLARE_ACCOUNT_ID or CLOUDFLARE_AI_TOKEN not set)');
+  else console.log('CLIP off (HF_TOKEN not set)');
 
   const rawMode = currentMode();
   const slotKey = `slot:${rawMode}:${todayMSK()}`;
