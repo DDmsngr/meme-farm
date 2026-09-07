@@ -35,6 +35,9 @@ jobs:
       - name: Install yt-dlp
         run: pip install --quiet yt-dlp
 
+      - name: Install ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+
       - name: Post one meme
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}

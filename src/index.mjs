@@ -171,7 +171,7 @@ async function fetchGeminiHoliday(dateStr) {
   const prompt = `Какой интересный, забавный или необычный тематический праздник отмечается ${dateStr}? Это может быть международный, российский, или неформальный "день чего-то" (день кофе, день пиццы, день лени и т.п.). Верни JSON: {"holiday": "название с одним эмодзи в конце"} — короткое название, максимум 5 слов. Если ничего интересного не найдено, верни {"holiday": null}.`;
   try {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${GEMINI_KEY}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -179,8 +179,7 @@ async function fetchGeminiHoliday(dateStr) {
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
             temperature: 0.4,
-            maxOutputTokens: 60,
-            responseMimeType: 'application/json',
+            maxOutputTokens: 800,
           },
         }),
       }
@@ -191,8 +190,7 @@ async function fetchGeminiHoliday(dateStr) {
     }
     const j = await res.json();
     const raw = j.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
+    const parsed = parseJsonFromText(raw);
     return parsed?.holiday || null;
   } catch (e) {
     console.warn('gemini holiday failed:', e.message);
@@ -233,7 +231,7 @@ async function fetchGeminiCaption(imageBuf, mimeType) {
   const prompt = `Ты видишь мемную картинку из русского телеграм-канала. Придумай к ней подпись на русском: дерзко, иронично, разговорно, как у меметичного паблика. Одна фраза, максимум 15 слов, без хештегов, без ссылок, без вопросов к читателю, без обзывательств. Верни JSON: {"caption": "текст"} или {"caption": null} если картинка непонятная или неудобная.`;
   try {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${GEMINI_KEY}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -246,8 +244,7 @@ async function fetchGeminiCaption(imageBuf, mimeType) {
           }],
           generationConfig: {
             temperature: 0.9,
-            maxOutputTokens: 100,
-            responseMimeType: 'application/json',
+            maxOutputTokens: 800,
           },
         }),
       }
@@ -258,8 +255,7 @@ async function fetchGeminiCaption(imageBuf, mimeType) {
     }
     const j = await res.json();
     const raw = j.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
+    const parsed = parseJsonFromText(raw);
     const cap = (parsed?.caption || '').trim();
     return cap && cap.length > 2 ? cap : null;
   } catch (e) {
@@ -505,6 +501,15 @@ function findSemanticDuplicate(newEmb, stored) {
     if (cosineSim(newEmb, s) >= CLIP_THRESHOLD) return true;
   }
   return false;
+}
+
+// Gemini 3.6-flash часто оборачивает JSON в markdown-фенсы или добавляет пояснения.
+// Ищем первый {..} блок и парсим его.
+function parseJsonFromText(raw) {
+  if (!raw) return null;
+  const m = /\{[\s\S]*\}/.exec(raw);
+  if (!m) return null;
+  try { return JSON.parse(m[0]); } catch { return null; }
 }
 
 async function fetchClipEmbedding(imgBuf) {
@@ -1235,7 +1240,7 @@ ${clean.slice(0, 1000)}
 Ответ строго в формате JSON без пояснений.`;
   try {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${GEMINI_KEY}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1243,8 +1248,7 @@ ${clean.slice(0, 1000)}
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
             temperature: 0,
-            maxOutputTokens: 100,
-            responseMimeType: 'application/json',
+            maxOutputTokens: 800,
           },
         }),
       }
@@ -1255,8 +1259,7 @@ ${clean.slice(0, 1000)}
     }
     const j = await res.json();
     const raw = j.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!raw) return null;
-    return JSON.parse(raw);
+    return parseJsonFromText(raw);
   } catch (e) {
     console.warn('gemini failed:', e.message);
     return null;
