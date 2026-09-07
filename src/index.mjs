@@ -512,8 +512,11 @@ function parseJsonFromText(raw) {
   try { return JSON.parse(m[0]); } catch { return null; }
 }
 
+let clipDisabledThisRun = false;
+
 async function fetchClipEmbedding(imgBuf) {
   if (!CF_ACCOUNT_ID || !CF_AI_TOKEN) return null;
+  if (clipDisabledThisRun) return null;
   try {
     const url = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/run/@cf/openai/clip-vit-base-patch32`;
     const r = await fetch(url, {
@@ -527,6 +530,12 @@ async function fetchClipEmbedding(imgBuf) {
     if (!r.ok) {
       const t = await r.text().catch(() => '');
       console.warn(`clip HTTP ${r.status}: ${t.slice(0, 200)}`);
+      // 401/402/403 = auth/billing/access — модель недоступна на этом аккаунте,
+      // не палим API до конца run'а
+      if (r.status === 401 || r.status === 402 || r.status === 403) {
+        clipDisabledThisRun = true;
+        console.warn('clip disabled for the rest of this run');
+      }
       return null;
     }
     const j = await r.json();
