@@ -9,10 +9,10 @@ import phash from 'sharp-phash';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEDUP_PATH = path.resolve(__dirname, '..', 'dedup.json');
 const DEDUP_LIMIT = 20000;
-const DEDUP_TTL_SEC = 2 * 24 * 3600; // 2 суток
+const DEDUP_TTL_SEC = 5 * 24 * 3600; // 5 суток
 const EMB_PATH = path.resolve(__dirname, '..', 'embeddings.json');
 const EMB_LIMIT = 3000;
-const EMB_TTL_SEC = 2 * 24 * 3600; // 2 суток
+const EMB_TTL_SEC = 5 * 24 * 3600; // 5 суток
 const CLIP_THRESHOLD = 0.90; // cosine similarity, ≥ значит семантический дубль
 
 const SUBREDDITS = ['Pikabu', 'ANormalDayInRussia'];
