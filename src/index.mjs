@@ -9,8 +9,10 @@ import phash from 'sharp-phash';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEDUP_PATH = path.resolve(__dirname, '..', 'dedup.json');
 const DEDUP_LIMIT = 20000;
+const DEDUP_TTL_SEC = 2 * 24 * 3600; // 2 суток
 const EMB_PATH = path.resolve(__dirname, '..', 'embeddings.json');
 const EMB_LIMIT = 3000;
+const EMB_TTL_SEC = 2 * 24 * 3600; // 2 суток
 const CLIP_THRESHOLD = 0.90; // cosine similarity, ≥ значит семантический дубль
 
 const SUBREDDITS = ['Pikabu', 'ANormalDayInRussia'];
@@ -441,32 +443,59 @@ function todayMSK() {
   return mskNow().toISOString().slice(0, 10);
 }
 
-async function loadDedup() {
-  try {
-    const raw = await readFile(DEDUP_PATH, 'utf8');
-    const data = JSON.parse(raw);
-    return new Set(data.hashes || []);
-  } catch {
-    return new Set();
+// Dedup — Map с методом .add(key) для совместимости со старым API.
+// Каждая запись хранит unix-timestamp; при загрузке фильтруем по TTL.
+class Dedup extends Map {
+  add(key) {
+    this.set(key, Math.floor(Date.now() / 1000));
+    return this;
   }
 }
 
-async function saveDedup(set) {
-  const arr = [...set];
-  const trimmed = arr.slice(-DEDUP_LIMIT);
-  await writeFile(DEDUP_PATH, JSON.stringify({ hashes: trimmed }, null, 2) + '\n', 'utf8');
+async function loadDedup() {
+  const d = new Dedup();
+  try {
+    const raw = await readFile(DEDUP_PATH, 'utf8');
+    const data = JSON.parse(raw);
+    const now = Math.floor(Date.now() / 1000);
+    const cutoff = now - DEDUP_TTL_SEC;
+    if (Array.isArray(data.hashes)) {
+      // старый формат — миграция: все существующие с ts = now, доживут TTL
+      for (const h of data.hashes) d.set(h, now);
+    } else if (data.hashes && typeof data.hashes === 'object') {
+      for (const [h, ts] of Object.entries(data.hashes)) {
+        const t = +ts || 0;
+        if (t >= cutoff) d.set(h, t);
+      }
+    }
+  } catch {}
+  return d;
+}
+
+async function saveDedup(dedup) {
+  const now = Math.floor(Date.now() / 1000);
+  const cutoff = now - DEDUP_TTL_SEC;
+  const entries = [...dedup.entries()].filter(([, ts]) => ts >= cutoff);
+  entries.sort((a, b) => a[1] - b[1]);
+  const trimmed = entries.slice(-DEDUP_LIMIT);
+  const obj = {};
+  for (const [h, ts] of trimmed) obj[h] = ts;
+  await writeFile(DEDUP_PATH, JSON.stringify({ hashes: obj }, null, 2) + '\n', 'utf8');
 }
 
 async function loadEmbeddings() {
   try {
     const raw = await readFile(EMB_PATH, 'utf8');
     const d = JSON.parse(raw);
-    return Array.isArray(d.vectors) ? d.vectors : [];
+    const cutoff = Math.floor(Date.now() / 1000) - EMB_TTL_SEC;
+    return (Array.isArray(d.vectors) ? d.vectors : []).filter((v) => (v.ts || 0) >= cutoff);
   } catch { return []; }
 }
 
 async function saveEmbeddings(vectors) {
-  const trimmed = vectors.slice(-EMB_LIMIT);
+  const cutoff = Math.floor(Date.now() / 1000) - EMB_TTL_SEC;
+  const fresh = vectors.filter((v) => (v.ts || 0) >= cutoff);
+  const trimmed = fresh.slice(-EMB_LIMIT);
   await writeFile(EMB_PATH, JSON.stringify({ vectors: trimmed }) + '\n', 'utf8');
 }
 
@@ -519,12 +548,13 @@ async function fetchClipEmbedding(imgBuf) {
   if (!HF_TOKEN) return null;
   if (clipDisabledThisRun) return null;
   try {
-    const url = 'https://api-inference.huggingface.co/pipeline/feature-extraction/openai/clip-vit-base-patch32';
+    const url = 'https://api-inference.huggingface.co/models/openai/clip-vit-base-patch32';
     const r = await fetch(url, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${HF_TOKEN}`,
         'Content-Type': 'application/octet-stream',
+        'X-Wait-For-Model': 'true',
       },
       body: imgBuf,
     });
