@@ -7,7 +7,7 @@ on:
 
 concurrency:
   group: post-meme
-  cancel-in-progress: false
+  cancel-in-progress: true # 2026-09-14: если старый run завис — новый его убьёт, очередь не копится
 
 permissions:
   contents: write
@@ -15,6 +15,7 @@ permissions:
 jobs:
   post:
     runs-on: ubuntu-latest
+    timeout-minutes: 5 # 2026-09-14: жёсткий cap, чтобы висящий run не блокировал следующие
     steps:
       - uses: actions/checkout@v4
         with:

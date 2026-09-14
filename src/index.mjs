@@ -547,6 +547,10 @@ let clipDisabledThisRun = false;
 async function fetchClipEmbedding(imgBuf) {
   if (!HF_TOKEN) return null;
   if (clipDisabledThisRun) return null;
+  // 2026-09-14: жёсткий timeout 20s через AbortController — раньше без него один зависший
+  // HF-запрос удерживал weekend runs на 24 часа, следующие 100+ отменялись по concurrency.
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 20_000);
   try {
     const url = 'https://api-inference.huggingface.co/models/openai/clip-vit-base-patch32';
     const r = await fetch(url, {
@@ -554,15 +558,16 @@ async function fetchClipEmbedding(imgBuf) {
       headers: {
         Authorization: `Bearer ${HF_TOKEN}`,
         'Content-Type': 'application/octet-stream',
-        'X-Wait-For-Model': 'true',
       },
       body: imgBuf,
+      signal: controller.signal,
     });
     if (!r.ok) {
       const t = await r.text().catch(() => '');
       console.warn(`clip HTTP ${r.status}: ${t.slice(0, 200)}`);
       // 401/402/403 = auth/billing/access — модель недоступна, не палим API до конца run'а
-      if (r.status === 401 || r.status === 402 || r.status === 403) {
+      // 503 = cold-start модели, тоже disable на run чтобы не терять время на следующих постах
+      if (r.status === 401 || r.status === 402 || r.status === 403 || r.status === 503) {
         clipDisabledThisRun = true;
         console.warn('clip disabled for the rest of this run');
       }
@@ -577,8 +582,15 @@ async function fetchClipEmbedding(imgBuf) {
     }
     return vec;
   } catch (e) {
-    console.warn('clip fetch failed:', e.message);
+    if (e.name === 'AbortError') {
+      console.warn('clip fetch timeout after 20s — disabling for this run');
+      clipDisabledThisRun = true;
+    } else {
+      console.warn('clip fetch failed:', e.message);
+    }
     return null;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
