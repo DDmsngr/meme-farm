@@ -81,6 +81,12 @@ const THEMED_CAPTIONS = {
     'Хорош залипать, ложись уже 🌙',
     'Приятных снов, страдальцы 🌛',
   ],
+  bash: [
+    '💬 Классика Башорга',
+    '💬 Из архива Цитатника Рунета',
+    '💬 Башорг подъехал',
+    '💬 Вечная классика с Башорга',
+  ],
 };
 
 function pickCaption(mode) {
@@ -431,6 +437,7 @@ function currentMode() {
   if (h === 10 && m < 15 && dow === 6) return 'weekend_sat';
   if (h === 11 && m < 15) return 'holiday';
   if (h === 12 && m < 15) return 'lunch';
+  if (h === 13 && m < 15) return 'bash';
   if (h === 15 && m < 15) return 'fact';
   if (h === 18 && m < 15 && dow === 5) return 'friday';
   if (h === 20 && m < 15 && dow === 0) return 'weekend_sun';
@@ -914,6 +921,51 @@ async function fetchRutubeCandidates() {
   }
 }
 
+// bashorg.su — архивный цитатник (~67k цитат, обновления с 2022 нет, но архива хватает).
+// /random отдаёт случайные цитаты. Anti-bot нет, обычный HTML.
+async function fetchBashCandidates() {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15_000);
+    const r = await fetch('https://www.bashorg.su/random', {
+      headers: { 'User-Agent': BROWSER_UA },
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timeoutId));
+    if (!r.ok) {
+      console.warn(`[bash] HTTP ${r.status}`);
+      return [];
+    }
+    const html = await r.text();
+    const blocks = html.split(/<div class="q"/).slice(1);
+    const results = [];
+    for (const b of blocks) {
+      const idM = /q(\d+)/.exec(b);
+      // body — второй <div> сразу после <div class="vote">…</div>
+      const bodyM = /<div class="vote">[\s\S]*?<\/div>\s*<div[^>]*>([\s\S]*?)<\/div>/i.exec(b);
+      const voteM = /<span id="q\d+">(-?\d+)<\/span>/.exec(b);
+      if (!idM || !bodyM) continue;
+      const text = decodeHtml(bodyM[1]);
+      if (text.length < 30 || text.length > 2000) continue;
+      const votes = +voteM?.[1] || 0;
+      results.push({
+        source: 'bash',
+        mediaType: 'text',
+        id: `bash:${idM[1]}`,
+        origin: 'bashorg.su',
+        title: text,
+        url: `https://www.bashorg.su/quote/${idM[1]}/view`,
+        ups: votes,
+      });
+    }
+    results.sort((a, b) => b.ups - a.ups);
+    console.log(`bash: ${blocks.length} raw → ${results.length} pass`);
+    return results;
+  } catch (e) {
+    console.warn('bash fetch failed:', e.message);
+    return [];
+  }
+}
+
 async function fetchMemeCandidates() {
   const [reddit, vk, tg, yt, rt] = await Promise.all([
     fetchRedditCandidates(SUBREDDITS),
@@ -990,6 +1042,8 @@ async function fetchCandidatesForMode(mode) {
       return fetchMemeCandidates();
     case 'cashback':
       return fetchDdgCandidates('кешбэк карта деньги', 'cashback');
+    case 'bash':
+      return fetchBashCandidates();
     case 'cats': {
       const [vk, tg] = await Promise.all([
         fetchVkCandidates(CATS_VK, 0),
@@ -1351,8 +1405,19 @@ async function tryPost(candidates, dedup, themedPrefix, embeddings) {
       }
     }
 
-    const labelMap = { reddit: `r/${post.origin}`, vk: `vk/${post.origin}`, tg: `tg/${post.origin}`, yt: `yt/${post.origin}`, rt: `rt/${post.origin}`, ddg: post.origin };
+    const labelMap = { reddit: `r/${post.origin}`, vk: `vk/${post.origin}`, tg: `tg/${post.origin}`, yt: `yt/${post.origin}`, rt: `rt/${post.origin}`, ddg: post.origin, bash: post.origin };
     const label = labelMap[post.source] || post.origin;
+
+    if (post.mediaType === 'text') {
+      // текстовые посты (bashorg-цитаты) — sendMessage без картинки
+      const body = [themedPrefix, post.title].filter(Boolean).join('\n\n');
+      const text = truncate(body, TG_MESSAGE_LIMIT);
+      console.log(`posting ${label} 💬 · ${post.ups} · ${post.title.slice(0, 80)}`);
+      await sendMessage(text, null);
+      dedup.add(urlHash);
+      dedup.add(post.id);
+      return true;
+    }
 
     if (post.mediaType === 'video') {
       let vid;
