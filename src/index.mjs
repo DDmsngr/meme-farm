@@ -294,6 +294,12 @@ const AD_MIN_TRIGGERS = 2;
 // Используем (?<!\p{L}) и (?!\p{L}) для word-boundaries по кириллице
 const AD_HARD_TRIGGERS = [
   { name: 'any-link', re: /https?:\/\/\S|www\.[a-z0-9-]+\.\S|(?<!\p{L})t\.me\/\S|(?<!\p{L})(?:vk\.cc|bit\.ly|clck\.ru|taplink|goo\.gl|tinyurl|short\.link)\/\S/iu },
+  // домены с TLD без обязательного слэша: `Polza.ai`, `example.com`, `service.io` (2026-09-15)
+  { name: 'domain-tld', re: /(?<!\p{L})[a-z][a-z0-9-]{1,30}\.(?:ai|ru|com|net|org|io|app|xyz|shop|store|club|link|dev|tech|media|space|site|online|pro|studio|academy|agency|digital|world|life|cloud|host|market|group|team)(?!\p{L})/iu },
+  // явное признание рекламы в тексте (без хештега): "это реклама", "реклама наших партнёров" и т.п. (2026-09-15)
+  { name: 'ad-word', re: /(?<!\p{L})реклам[аеуы](?!\p{L})/iu },
+  // "попробуйте <что-то>" — типичный call-to-action в рекламных постах
+  { name: 'try-cta', re: /попроб(?:уй(?:те)?|уешь)\s+\S/iu },
   { name: 'bank', re: /(?<!\p{L})банк(?:а|у|е|ом|ов|ами|ах)?(?!\p{L})/iu },
   { name: 'alpha', re: /(?<!\p{L})альфа(?:[\s-]?банк\p{L}*)?(?!\p{L})/iu },
   { name: 'sber', re: /(?<!\p{L})сбер(?:банк\p{L}*|карта|пэй)?(?!\p{L})/iu },
