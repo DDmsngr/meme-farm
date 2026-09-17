@@ -281,7 +281,9 @@ const AD_TRIGGERS = [
   { name: 'promokod', re: /промокод/i },
   { name: 'discount', re: /скидк[аиоуеы]/i },
   { name: 'coupon', re: /купон/i },
-  { name: 'bonus', re: /\bбонус/i },
+  // было /\bбонус/i — \b никогда не матчит кириллицу (JS word-boundary работает только по ASCII),
+  // из-за этого триггер молча не срабатывал НИКОГДА. Найдено 2026-09-17 на посте 1554.
+  { name: 'bonus', re: /(?<!\p{L})бонус\p{L}*(?!\p{L})/iu },
   { name: 'subscribe', re: /подпи[шс](ись|итесь|аться|ывай)|подписка на канал/i },
   { name: 'go-link', re: /переход(и|ите)\s+по\s+ссылке|по\s+ссылке\s+ниже/i },
   { name: 'ad-tag', re: /#реклама|#ad\b|#промо|#partner/i },
@@ -300,6 +302,11 @@ const AD_HARD_TRIGGERS = [
   { name: 'ad-word', re: /(?<!\p{L})реклам[аеуы](?!\p{L})/iu },
   // "попробуйте <что-то>" — типичный call-to-action в рекламных постах
   { name: 'try-cta', re: /попроб(?:уй(?:те)?|уешь)\s+\S/iu },
+  // классические фразы финансовых скам-схем / "заработка без вложений" (2026-09-17)
+  { name: 'no-investment', re: /без\s+вложени[йя]/iu },
+  { name: 'earn-scheme', re: /перейти\s+в\s+бота|выполн(?:ить|яй)\s+задани[ея]|начать\s+зарабатывать|вывод\s+баланса|заработать\s+на\s+(?:своей\s+)?удаче/iu },
+  // "читай(те) блог/канал «Название»" — типовая нативная реклама сторонних каналов (2026-09-17)
+  { name: 'named-blog-cta', re: /(?:блог|канал)\s*["«][^"»]{1,40}["»]/iu },
   { name: 'bank', re: /(?<!\p{L})банк(?:а|у|е|ом|ов|ами|ах)?(?!\p{L})/iu },
   { name: 'alpha', re: /(?<!\p{L})альфа(?:[\s-]?банк\p{L}*)?(?!\p{L})/iu },
   { name: 'sber', re: /(?<!\p{L})сбер(?:банк\p{L}*|карта|пэй)?(?!\p{L})/iu },
@@ -421,7 +428,11 @@ function tgCdnFileId(url) {
 
 function findVisualDuplicate(newPhash, dedupSet) {
   const bits = newPhash.slice('phash:'.length);
-  for (const entry of dedupSet) {
+  // dedupSet — Map (после TTL-рефакторинга 2026-09-07), .keys() работает и для Map, и для Set.
+  // Раньше тут был `for (const entry of dedupSet)`, что для Map отдаёт [key, value] пары —
+  // entry.startsWith падал с TypeError, тихо гасился в catch вызывающей стороны,
+  // и визуальный дедуп молча не работал с момента TTL-рефакторинга (баг найден 2026-09-17).
+  for (const entry of dedupSet.keys()) {
     if (!entry.startsWith('phash:')) continue;
     if (hammingDistance(bits, entry.slice('phash:'.length)) <= PHASH_THRESHOLD) return true;
   }
