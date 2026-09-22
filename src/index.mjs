@@ -386,7 +386,6 @@ const TG_CHANNELS = [
   'internetpasta',
   'memepedia_Ru',
   'apatiyaaaa',
-  'yu6_6kan',
   'cbpub',
   'lentachold',
   'dvachannel',
@@ -789,6 +788,9 @@ async function fetchTgChannel(channel) {
   for (const block of blocks) {
     const idM = /data-post="([^"]+)"/.exec(block);
     if (!idM) continue;
+    // "видео-сообщения" (кружочки) — личные влоги, разговоры на камеру, не мемы.
+    // TG размечает их отдельным классом roundvideo_media (2026-09-22, репорт юзера про пост 2109).
+    if (/roundvideo/i.test(block)) continue;
     const videoM = /<video[^>]*\ssrc=["']([^"']+)["']/.exec(block);
     const photoUrls = [...block.matchAll(/tgme_widget_message_photo_wrap[\s\S]*?background-image:url\('([^']+)'/g)].map((m) => m[1]);
     let mediaType = null;
