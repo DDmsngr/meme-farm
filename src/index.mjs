@@ -390,7 +390,8 @@ const TG_CHANNELS = [
   'lentachold',
   'dvachannel',
   'mudak',
-  'meowfacts',
+  'prikotik',
+  'koshkii_kotiki',
 ];
 
 const YT_KEYWORDS = ['мемы shorts', 'приколы shorts', 'смешное shorts', 'шутки shorts'];
