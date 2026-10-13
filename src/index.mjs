@@ -1141,6 +1141,7 @@ function stripChannelSignature(text) {
       .replace(/\s*\|\s*Наш(?:и)?\s+каналы?\s*$/iu, '')
       .replace(/\s*\|\s*Мой\s+канал\s*$/iu, '')
       .replace(/\s*\|\s*Подпис(?:ать|ыв)ся\s*$/iu, '')
+      .replace(/\s*♥️?\s*шерстяные\s+проказники\s*$/iu, '')
       .trim();
     if (s === before) break;
   }
